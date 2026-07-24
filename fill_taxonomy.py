@@ -803,12 +803,26 @@ def main():
     inat = INaturalist(timeout=args.timeout) if args.inaturalist else None
     api.names = ancestors
     resolved, stalled = 0, 0
+    started = time.monotonic()
     MAX_STALLED = 25
     try:
-        for index, name in enumerate(names, 1):   # query each name once
+        # Decide what to ask about before starting, so progress counts the work
+        # actually being done. Reporting against the whole list left a resumed
+        # run silent through every cached name and then claiming to have
+        # "queried" them.
+        def needs_query(name):
             known = cache.get(name)
-            if known is not None and (ranks_of(known) or not args.retry_misses):
-                continue
+            return known is None or not (ranks_of(known) or not args.retry_misses)
+
+        todo = [n for n in names if needs_query(n)]
+        skipped = len(names) - len(todo)
+        if skipped:
+            print(f"  {skipped:,} already resolved, {len(todo):,} to query",
+                  flush=True)
+        if not todo:
+            print("  nothing left to query", flush=True)
+
+        for index, name in enumerate(todo, 1):
             sent = normalise_name(name)
             try:
                 record, candidates = api.search(sent) if sent else (None, 0)
@@ -908,10 +922,12 @@ def main():
                                "source": "", "candidates": candidates,
                                "matched_name": "", "matched_rank": "",
                                "taxonworks_id": "", "lineage_raw": []}
-            if index % 25 == 0 or index == len(names):
-                checkpoint = index % 250 == 0 or index == len(names)
-                print(f"  {index:,}/{len(names):,} queried, {resolved:,} matched",
-                      flush=True)
+            if index % 25 == 0 or index == len(todo):
+                checkpoint = index % 250 == 0 or index == len(todo)
+                rate = index / max(time.monotonic() - started, 1e-6)
+                left = (len(todo) - index) / rate if rate else 0
+                print(f"  {index:,}/{len(todo):,} queried, {resolved:,} matched, "
+                      f"{rate * 60:.0f}/min, ~{left / 60:.0f} min left", flush=True)
                 save_json(cache_path, cache)
                 if checkpoint:
                     # The CSV is regenerated whole, so do it on a coarser
