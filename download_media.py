@@ -339,6 +339,51 @@ def load_verbatim_ranks(archive_dir, wanted):
 DIGIT_RUN = re.compile(r"\d{5,}")
 
 
+# Who to credit, in order of how specific the statement is. A rights holder is
+# the party whose permission the licence expresses; a creator is the person who
+# made the image. TaxonWorks wants both, and a licence alone is not enough.
+HOLDER_FIELDS = ["dcterms:rightsHolder", "xmpRights:Owner", "ac:providerLiteral"]
+CREATOR_FIELDS = ["dc:creator", "dcterms:creator", "photoshop:Credit"]
+TERMS_FIELDS = ["dcterms:license", "xmpRights:UsageTerms"]
+
+
+def first_of(row, fields):
+    for field in fields:
+        value = (row.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def load_media_credits(archive_dir, wanted):
+    """Attribution from the verbatim media file, keyed by accessURI then coreid.
+
+    ac:accessURI identifies the individual image and is present for most rows,
+    so credit lands on the right one; coreid is the fallback, which is only
+    right when a specimen's images share a photographer.
+    """
+    path = os.path.join(archive_dir, MULTIMEDIA_RAW_FILE)
+    if not os.path.exists(path):
+        return {}, {}
+    by_url, by_core = {}, {}
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if row["coreid"] not in wanted:
+                continue
+            credit = {
+                "rights_holder": first_of(row, HOLDER_FIELDS),
+                "creator": first_of(row, CREATOR_FIELDS),
+                "usage_terms": first_of(row, TERMS_FIELDS),
+            }
+            if not any(credit.values()):
+                continue
+            url = (row.get("ac:accessURI") or "").strip()
+            if url:
+                by_url[url] = credit
+            by_core.setdefault(row["coreid"], credit)
+    return by_url, by_core
+
+
 def load_media_titles(archive_dir, wanted):
     """coreid -> the specimen numbers appearing in its media titles.
 
@@ -396,6 +441,8 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
     coreids = {m["coreid"] for m in media}
     context = load_occurrence_context(archive_dir, coreids)
     titles = load_media_titles(archive_dir, coreids) if verbatim else {}
+    credit_by_url, credit_by_core = (load_media_credits(archive_dir, coreids)
+                                     if verbatim else ({}, {}))
     if verbatim:
         for coreid, values in load_verbatim_ranks(archive_dir, coreids).items():
             fields = context.get(coreid)
@@ -413,6 +460,9 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
         row.update(fields or dict.fromkeys(OCCURRENCE_CONTEXT, ""))
         row["title_check"] = check_title(row.get("dwc:catalogNumber", ""),
                                          titles.get(row["coreid"]))
+        credit = credit_by_url.get(row["url"]) or credit_by_core.get(row["coreid"])
+        row.update(credit or {"rights_holder": "", "creator": "",
+                              "usage_terms": ""})
         if not has_type:
             row["type_category"] = "no-typestatus"
         items.append(row)
@@ -792,8 +842,8 @@ def main():
 
     manifest = os.path.join(out_dir, "manifest.csv")
     columns = (["status", "filename", "url", "coreid", "media_uuid", "media_type",
-                "format", "rights", "rights_url", "type_category",
-                "title_check"]
+                "format", "rights", "rights_url", "usage_terms",
+                "rights_holder", "creator", "type_category", "title_check"]
                + OCCURRENCE_CONTEXT
                + ["citation_roles", "cited_taxa", "publications", "cited_pages",
                   "detail"])

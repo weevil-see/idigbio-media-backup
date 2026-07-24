@@ -76,7 +76,8 @@ TREES = [
 # array of indices into a shared vocabulary; -1 means that level is unknown.
 FIELDS = ["file", "catalog", "name", "status", "category", "institution",
           "coreid", "url", "publication", "levels", "source", "matched",
-          "licence", "licence_url", "pending", "title_check"]
+          "licence", "licence_url", "pending", "title_check",
+          "holder", "creator", "terms"]
 
 
 # iDigBio lower-cases everything it indexes, so the archive yields 'animalia',
@@ -353,6 +354,9 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim,
             item.get("rights_url", ""),
             0 if name else 1,          # pending: known to the archive, not on disk
             item.get("title_check", ""),
+            item.get("rights_holder", ""),
+            item.get("creator", ""),
+            item.get("usage_terms", ""),
         ])
     # Group a specimen's several views together. coreid (the occurrence UUID) is
     # the identity -- a catalogue number is only unique within an institution, so
@@ -567,7 +571,8 @@ const rows = DATA.map(a => {
   FIELDS.forEach((f, i) => o[f] = a[i]);
   o.paths = o.levels.map(ix => ix.map(i => i < 0 ? "" : VOCAB[i]));
   o._hay = [o.catalog, o.name, o.status, o.institution, o.publication, o.matched,
-            o.licence, o.title_check ? "title-mismatch " + o.title_check : "",
+            o.licence, o.holder, o.creator,
+            o.title_check ? "title-mismatch " + o.title_check : "",
             ...o.paths.flat()].join(" ").toLowerCase();
   return o;
 });
@@ -933,7 +938,14 @@ function show(rowIndex) {
       <dt>Institution</dt><dd>${esc(r.institution) || "—"}</dd>
       <dt>Licence</dt><dd>${r.licence_url
         ? `<a href="${esc(r.licence_url)}" target="_blank">${esc(r.licence)}</a>`
-        : esc(r.licence)}</dd>
+        : esc(r.licence)}${r.terms && r.terms !== r.licence
+          ? `<br><span class="ext">${esc(r.terms)}</span>` : ""}</dd>
+      ${r.holder || r.creator ? `<dt>Credit</dt><dd>
+        ${r.creator ? esc(r.creator) : ""}${r.creator && r.holder ? " · " : ""}
+        ${r.holder ? esc(r.holder) : ""}
+        <button id="vcite" class="reveal-btn">copy attribution</button></dd>`
+        : `<dt>Credit</dt><dd class="warn">No rights holder or creator stated —
+           a licence alone does not say whom to attribute.</dd>`}
       <dt>Classification <span class="ext">${
         r.source === "archive" ? "" : "· " + esc(r.source)}</span></dt>
       <dd class="lineage">${lineage || "—"}</dd>
@@ -975,6 +987,28 @@ function show(rowIndex) {
     }
     setTimeout(() => { reveal.textContent = REVEAL_LABEL; }, 2500);
   };
+
+  // One line carrying everything an attribution needs: who made it, whose
+  // rights it is under, the terms, and where it came from.
+  const cite = document.getElementById("vcite");
+  if (cite) {
+    const parts = [];
+    if (r.creator) parts.push(r.creator);
+    if (r.holder && r.holder !== r.creator) parts.push(r.holder);
+    const line = parts.join(" / ") +
+      (r.licence && r.licence !== "(none stated)" ? ". " + r.licence : "") +
+      (r.terms && r.terms !== r.licence ? " (" + r.terms + ")" : "") +
+      ". " + r.url;
+    cite.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(line);
+        cite.textContent = "copied";
+      } catch {
+        cite.textContent = line;          // selectable, if the clipboard is barred
+      }
+      setTimeout(() => { cite.textContent = "copy attribution"; }, 2500);
+    };
+  }
 
   const siblings = BY_SPECIMEN.get(r.coreid) || [rowIndex];
   const strip = document.getElementById("vstrip");

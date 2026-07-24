@@ -243,6 +243,37 @@ Licence sits on the *media* record, not the specimen, so different images of one
 specimen can carry different terms — filtering by licence can therefore split a
 specimen's views. That is faithful to the data, not a bug.
 
+### Attribution
+
+A licence says what may be done; it does not say whom to credit. Reusing an
+image — adding it to TaxonWorks, say — needs the rights holder and usually the
+photographer as well, and those live in the verbatim media file under several
+different terms depending on the publisher. The first one present is taken, most
+specific first:
+
+| | fields consulted, in order |
+|---|---|
+| rights holder | `dcterms:rightsHolder`, `xmpRights:Owner`, `ac:providerLiteral` |
+| creator | `dc:creator`, `dcterms:creator`, `photoshop:Credit` |
+| terms | `dcterms:license`, `xmpRights:UsageTerms` |
+
+They are joined to the individual image on `ac:accessURI` where the publisher
+gives one (92.6% of rows), falling back to the specimen's `coreid`. In one
+weevil archive that filled a rights holder for 94% of type media, a creator for
+91% and usage terms for 95%.
+
+The detail panel shows them and offers **copy attribution**, which puts one line
+on the clipboard:
+
+```
+Jens Prena / Smithsonian Institution, NMNH, Entomology
+(https://www.si.edu/termsofuse). https://collections.nmnh.si.edu/media/…
+```
+
+Where nothing is stated the panel says so plainly rather than leaving it blank —
+a licence with no named holder is not enough to attribute. `manifest.csv` gains
+`rights_holder`, `creator` and `usage_terms` columns.
+
 ### Capitalisation
 
 iDigBio lower-cases what it indexes, so the archive yields `animalia`, `usnm`,
@@ -413,6 +444,29 @@ match as written — and species that are simply absent from the project. Such
 records still gain family, tribe and genus, which is all that gets filled
 anyway. The gallery marks them `(placed by genus)` so a genus-level placement is
 never mistaken for a species-level determination.
+
+#### Gender variants
+
+`--gender-variants` is tried before falling back to the genus, and is **off
+unless asked for**. An epithet agrees in gender with its genus, so one name has
+up to three written forms — `albidus`, `albida`, `albidum` — and a species moved
+to a genus of another gender keeps its stem and changes only its ending. Where
+the archive spells a name for one gender and the nomenclator for another, they
+are the same name; matching them is a rule, not a resemblance. The genus must
+still be the one asked about, since a different genus would replace every rank
+this fills.
+
+An earlier attempt scored candidates by string similarity. It was withdrawn as
+unsafe: across 6,753 binomials from one archive, **609 pairs of distinct species
+in the same genus scored above 0.90** and 63 still did at 0.95 —
+`Conotrachelus carinatus` against `C. ecarinatus` at 0.979, `aratus` against
+`armatus` at 0.976. No threshold separates a typo from a sibling species.
+Gender agreement has no such failure mode: the stems differ, so those two
+generate disjoint sets of forms and can never meet. On the same archive the rule
+unifies 16 within-genus pairs, each one species written for two genders —
+`sitona hispidula` and `sitona hispidulus`, `micracis nanula` and `nanulus`.
+
+Matches made this way are marked `matched-gender-variant` in the report.
 
 #### The match report
 
