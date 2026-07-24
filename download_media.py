@@ -366,6 +366,43 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
     return items
 
 
+# Options are asked for at startup rather than only accepted as flags, since
+# these are run bare far more often than not. A flag given on the command line
+# always wins, and nothing is asked when there is no terminal to answer -- cron
+# and pipes get the defaults instead of blocking forever.
+def interactive():
+    return sys.stdin.isatty()
+
+
+def _ask(question, default_label):
+    try:
+        return input(f"  {question} [{default_label}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
+def ask_yes_no(question, default=False):
+    answer = _ask(question, "Y/n" if default else "y/N").lower()
+    if not answer:
+        return default
+    return answer[0] == "y"
+
+
+def ask_int(question, default=None):
+    answer = _ask(question, str(default) if default is not None else "all")
+    if not answer:
+        return default
+    if answer.isdigit():
+        return int(answer)
+    print(f"    not a number, using {default}")
+    return default
+
+
+def ask_text(question, default=""):
+    return _ask(question, default or "none") or default
+
+
 def ask_scope():
     """Prompt for the download scope; used when --scope is not given."""
     print("\nWhich media should be downloaded?")
@@ -458,8 +495,8 @@ def main():
     parser.add_argument("--scope", choices=[SCOPE_TYPES, SCOPE_ALL],
                         help="which media to fetch: 'types' (dwc:typeStatus not "
                              "empty) or 'all'. Asked interactively if omitted")
-    parser.add_argument("--workers", type=int, default=8,
-                        help="parallel downloads (default: 8)")
+    parser.add_argument("--workers", type=int,
+                        help="parallel downloads (default: 8, asked if omitted)")
     parser.add_argument("--limit", type=int,
                         help="stop after N files, for testing")
     parser.add_argument("--timeout", type=float, default=60.0,
@@ -479,7 +516,14 @@ def main():
     if scope is None:
         # Non-interactive (cron, piped): fall back to the safer, smaller set
         # rather than blocking on a prompt nobody can answer.
-        scope = ask_scope() if sys.stdin.isatty() else SCOPE_TYPES
+        scope = ask_scope() if interactive() else SCOPE_TYPES
+
+    if interactive() and args.workers is None and args.limit is None:
+        print("\nOptions (press Enter to accept each default):")
+        args.workers = ask_int("parallel downloads", 8)
+        args.limit = ask_int("stop after how many files", None)
+        print()
+    args.workers = args.workers or 8
 
     label = "type specimens only" if scope == SCOPE_TYPES else "all media"
     print(f"\nReading archive ({label}) ...", flush=True)

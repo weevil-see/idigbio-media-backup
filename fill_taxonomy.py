@@ -241,6 +241,50 @@ REPORT_COLUMNS = ["status", "queried_name", "sent_to_api", "matched_via",
 UNMAPPED_RANKS = collections.Counter()
 
 
+def save_json(path, data):
+    """Checkpoint write that tolerates its directory having gone away."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=0)
+
+
+def write_output(path, cache, specimens):
+    """Write taxonworks.csv from whatever is resolved so far.
+
+    Called at every checkpoint, not only at the end: a resolve takes hours, and
+    a run that is interrupted should still leave the gallery something to merge
+    rather than nothing.
+    """
+    written = 0
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=OUT_COLUMNS)
+        writer.writeheader()
+        for coreid, name in specimens:
+            entry = cache.get(name)
+            ranks = ranks_of(entry)
+            if not ranks:
+                continue
+            row = {"coreid": coreid,
+                   "queried_name": name,
+                   # A voucher for how the placement was reached, never a
+                   # replacement for the published dwc:scientificName.
+                   "taxonworks_name": entry["matched_name"],
+                   "taxonworks_rank": entry["matched_rank"],
+                   # 'genus': the species did not match and the record was placed
+                   # by its genus alone -- said plainly rather than implying a
+                   # species-level identification.
+                   "matched_via": entry.get("via", ""),
+                   "taxonworks_id": entry["taxonworks_id"],
+                   "source": "taxonworks"}
+            for column, value in ranks.items():
+                if column in FILLABLE_RANKS:
+                    row[column.split(":", 1)[1]] = value
+            writer.writerow(row)
+            written += 1
+    return written
+
+
 def ranks_of(entry):
     """Darwin Core ranks for a cache entry, re-mapped from the raw lineage."""
     if not entry:
@@ -469,6 +513,16 @@ def main():
     required = [r for r in dl.TAXON_RANKS
                 if r.split(":", 1)[1].lower()
                 in {x.strip().lower() for x in args.missing_ranks.split(",") if x.strip()}]
+    if dl.interactive() and not (args.report_only or args.list_only):
+        print("Options (press Enter to accept each default):")
+        args.report_only = dl.ask_yes_no(
+            "only report on the existing cache, without querying", False)
+        if not args.report_only:
+            args.retry_misses = dl.ask_yes_no(
+                "re-query names previously found absent", False)
+            args.limit = dl.ask_int("stop after how many specimens", None)
+        print()
+
     specimens, names, total, media_counts = specimens_to_resolve(
         args.archive, args.missing_only, not args.no_verbatim, required)
     if args.limit:
@@ -587,44 +641,17 @@ def main():
             if index % 25 == 0 or index == len(names):
                 print(f"  {index:,}/{len(names):,} queried, {resolved:,} matched",
                       flush=True)
-                with open(cache_path, "w", encoding="utf-8") as fh:
-                    json.dump(cache, fh, indent=0)
+                save_json(cache_path, cache)
+                write_output(os.path.join(args.out, "taxonworks.csv"),
+                             cache, specimens)
     except KeyboardInterrupt:
         print("\nInterrupted -- keeping what was resolved so far", flush=True)
     finally:
-        with open(cache_path, "w", encoding="utf-8") as fh:
-            json.dump(cache, fh, indent=0)
-        with open(ancestors_path, "w", encoding="utf-8") as fh:
-            json.dump(api.names, fh, indent=0)
+        save_json(cache_path, cache)
+        save_json(ancestors_path, api.names)
 
     out_path = os.path.join(args.out, "taxonworks.csv")
-    written = 0
-    with open(out_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=OUT_COLUMNS)
-        writer.writeheader()
-        for coreid, name in specimens:
-            entry = cache.get(name)
-            ranks = ranks_of(entry)
-            if not ranks:
-                continue
-            row = {"coreid": coreid,
-                   "queried_name": name,
-                   # Recorded so the gallery can show and search it. It is a
-                   # voucher for how the placement was reached, never a
-                   # replacement for the published dwc:scientificName.
-                   "taxonworks_name": entry["matched_name"],
-                   "taxonworks_rank": entry["matched_rank"],
-                   # 'genus' means the species could not be matched and the
-                   # record was placed by its genus alone -- the gallery says so
-                   # rather than implying a species-level identification.
-                   "matched_via": entry.get("via", ""),
-                   "taxonworks_id": entry["taxonworks_id"],
-                   "source": "taxonworks"}
-            for column, value in ranks.items():
-                if column in FILLABLE_RANKS:
-                    row[column.split(":", 1)[1]] = value
-            writer.writerow(row)
-            written += 1
+    written = write_output(out_path, cache, specimens)
 
     report_path = os.path.join(args.out, "match_report.csv")
     summarise(write_report(report_path, cache, specimens, media_counts))

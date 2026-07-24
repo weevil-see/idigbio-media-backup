@@ -68,9 +68,11 @@ python3 ../download_media.py --scope types  # only occurrences with a typeStatus
 python3 ../download_media.py --scope all    # every media record
 ```
 
-Without `--scope` you are asked at the prompt; when not attached to a terminal
-(cron, a pipe) it takes `types` rather than blocking on a question nobody can
-answer.
+All three scripts ask for their options at startup, so they are useful run bare
+with no flags. Press Enter to accept each default. A flag given on the command
+line is never asked about, and nothing is asked when there is no terminal to
+answer — cron and pipes get the defaults instead of blocking forever. For the
+download that means `--scope types`.
 
 Running `--scope types` first and `--scope all` later is safe: resume matches on
 media UUID, so the type files are recognised and skipped. `manifest.csv` is a

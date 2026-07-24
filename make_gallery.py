@@ -809,6 +809,25 @@ def main():
     args.media = args.media or os.path.join(args.root, "media")
     args.out = args.out or os.path.join(args.root, "gallery")
 
+    if dl.interactive():
+        print("Options (press Enter to accept each default):")
+        if args.taxonomy is None:
+            found = os.path.join(args.root, "taxonomy", "taxonworks.csv")
+            if os.path.exists(found):
+                if dl.ask_yes_no(f"merge {os.path.relpath(found)}", True):
+                    args.taxonomy = found
+                    args.taxonomy_authoritative = dl.ask_yes_no(
+                        "let it overwrite ranks the archive already has", False)
+        if not args.no_verbatim:
+            args.no_verbatim = not dl.ask_yes_no(
+                "use verbatim ranks from occurrence_raw.csv (better species)", True)
+        if not args.strict:
+            args.strict = dl.ask_yes_no(
+                "fail if media files match no archive record", False)
+        if not args.open:
+            args.open = dl.ask_yes_no("open the gallery when done", True)
+        print()
+
     media_dir = os.path.abspath(args.media)
     if not os.path.isdir(media_dir):
         sys.exit(f"no media folder at {media_dir} -- run download_media.py first")
