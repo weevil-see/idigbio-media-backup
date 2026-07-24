@@ -520,6 +520,10 @@ PAGE = """<!doctype html>
   .info dd { margin: 2px 0 0; word-break: break-word; }
   .info a { color: var(--accent); }
   .unstated { color: var(--muted); font-style: italic; }
+  .copyval { background: none; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 5px; padding: 0 6px; margin-left: 6px; font: inherit;
+    font-size: 11px; cursor: pointer; vertical-align: 1px; }
+  .copyval:hover { border-color: var(--accent); color: var(--accent); }
   .lineage { font-size: 13px; line-height: 1.7; }
   .lineage span { color: var(--muted); }
   .close { position: absolute; top: 8px; right: 13px; background: none;
@@ -797,6 +801,13 @@ function matchesAll(r) {
 let shown = [], drawn = 0;
 const PAGE_SIZE = 120;
 
+/* Each role is entered in its own field in TaxonWorks, so each is copied on its
+   own; the whole line is for citing the image somewhere prose is wanted. */
+function copyButton(value) {
+  return ` <button class="copyval" data-v="${esc(value)}"
+    title="copy just this">copy</button>`;
+}
+
 function esc(s) {
   return (s || "").replace(/[&<>"]/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -942,9 +953,11 @@ function show(rowIndex) {
         ? `<a href="${esc(r.licence_url)}" target="_blank">${esc(r.licence)}</a>`
         : esc(r.licence)}${r.terms && r.terms !== r.licence
           ? `<br><span class="ext">${esc(r.terms)}</span>` : ""}</dd>
-      <dt>Creator</dt><dd>${r.creator ? esc(r.creator)
+      <dt>Creator</dt><dd>${r.creator
+        ? esc(r.creator) + copyButton(r.creator)
         : `<span class="unstated">not stated</span>`}</dd>
-      <dt>Copyright holder</dt><dd>${r.holder ? esc(r.holder)
+      <dt>Copyright holder</dt><dd>${r.holder
+        ? esc(r.holder) + copyButton(r.holder)
         : `<span class="unstated">not stated</span>`}${
         // The provider only ever appears here, as somewhere to ask. Naming it
         // as the holder would assert a right the archive does not record.

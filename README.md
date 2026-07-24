@@ -276,7 +276,9 @@ The panel shows two rows, the two roles TaxonWorks would have you fill —
 **Creator** and **Copyright holder** — each saying *not stated* when the archive
 is silent. The provider appears only inside the holder row, and only when there
 is no holder, as somewhere to ask: naming it as the holder would assert a right
-the archive does not record. **Copy attribution** puts one line on the
+the archive does not record. Each row has its own **copy** button, since TaxonWorks records the two under
+separate roles and a combined string would have to be split again by hand.
+**Copy attribution** is still there for prose, putting one line on the
 clipboard:
 
 ```
