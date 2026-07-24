@@ -823,117 +823,122 @@ def main():
             print("  nothing left to query", flush=True)
 
         for index, name in enumerate(todo, 1):
-            sent = normalise_name(name)
             try:
-                record, candidates = api.search(sent) if sent else (None, 0)
-            except Transient as error:
-                # Leave it uncached so a later run retries it, rather than
-                # recording "absent" for something the API never answered.
-                stalled += 1
-                print(f"  [{stalled}] {name}: {error}", flush=True)
-                if stalled >= MAX_STALLED:
-                    print(f"  giving up after {MAX_STALLED} unanswered requests; "
-                          f"progress is saved, re-run to continue", flush=True)
-                    break
-                continue
-            via, ratio = "name", ""
-            stalled = 0
-
-            if not record and sent and args.gender_variants:
-                # The same epithet written for a genus of another gender.
+                sent = normalise_name(name)
                 try:
-                    record, ratio = api.gender_variant(sent)
-                except Transient:
-                    record = None
-                if record:
-                    via, candidates = "gender", 1
-
-            if not record and sent and inat is not None:
-                # TaxonWorks does not hold this name at all. Ask iNaturalist for
-                # the ranks above it, species first and then the genus.
-                try:
-                    # Only the genus, and only where the archive gives something
-                    # to check the answer against.
-                    genus = sent.split()[0]
-                    expect = {"family": (specimen_context.get(name, {})
-                                         .get("dwc:family") or ""),
-                              "kingdom": (specimen_context.get(name, {})
-                                          .get("dwc:kingdom") or "")}
-                    for probe in (genus,):
-                        inat_record, pairs = inat.lookup(probe, expect)
-                        if pairs:
-                            cache[name] = {
-                                "sent": probe, "via": "inaturalist", "ratio": "",
-                                "candidates": 1,
-                                "matched_name": inat_record.get("name", ""),
-                                "matched_rank": inat_record.get("rank", ""),
-                                "taxonworks_id": "",
-                                "current_name": inat_record.get("name", ""),
-                                "current_id": inat_record.get("id"),
-                                "is_synonym": False,
-                                "source": "inaturalist",
-                                "lineage_raw": pairs,
-                            }
-                            resolved += 1
-                            break
-                    if name in cache:
-                        continue
+                    record, candidates = api.search(sent) if sent else (None, 0)
                 except Transient as error:
-                    print(f"  iNaturalist: {name}: {error}", flush=True)
+                    # Leave it uncached so a later run retries it, rather than
+                    # recording "absent" for something the API never answered.
+                    stalled += 1
+                    print(f"  [{stalled}] {name}: {error}", flush=True)
+                    if stalled >= MAX_STALLED:
+                        print(f"  giving up after {MAX_STALLED} unanswered requests; "
+                              f"progress is saved, re-run to continue", flush=True)
+                        break
+                    continue
+                via, ratio = "name", ""
+                stalled = 0
 
-            if not record and sent:
-                # No species-level match: place the record by its genus instead.
-                # 'Curculio sp.' and 'Larinus cf. obtusus' can never match as
-                # written, and a species absent from the project usually has its
-                # genus present -- either way the higher ranks are recoverable,
-                # which is all this fills anyway.
-                genus = sent.split()[0]
-                if genus and genus != sent:
+                if not record and sent and args.gender_variants:
+                    # The same epithet written for a genus of another gender.
                     try:
-                        record, candidates = api.search(genus)
+                        record, ratio = api.gender_variant(sent)
                     except Transient:
-                        continue          # retried next run
-                    via = "genus" if record else via
-            if record:
-                # Classify by the name in use now, but remember what was hit.
-                accepted = api.current(record)
-                cache[name] = {
-                    "sent": sent,
-                    "via": via,
-                    "ratio": ratio,
-                    "candidates": candidates,
-                    "matched_name": record.get("cached") or record.get("name") or "",
-                    "matched_rank": (record.get("rank_string") or "")
-                                    .rsplit("::", 1)[-1],
-                    "taxonworks_id": record.get("id"),
-                    "current_name": (accepted.get("cached")
-                                     or accepted.get("name") or ""),
-                    "current_id": accepted.get("id"),
-                    "is_synonym": accepted.get("id") != record.get("id"),
-                    # Written out rather than left to be inferred from the key
-                    # being missing: provenance should survive a cache read by
-                    # anything that was not this script.
-                    "source": "taxonworks",
-                    "lineage_raw": api.lineage(accepted),
-                }
-                resolved += 1
-            else:
-                cache[name] = {"sent": sent, "via": "", "ratio": ratio,
-                               "source": "", "candidates": candidates,
-                               "matched_name": "", "matched_rank": "",
-                               "taxonworks_id": "", "lineage_raw": []}
-            if index % 25 == 0 or index == len(todo):
-                checkpoint = index % 250 == 0 or index == len(todo)
-                rate = index / max(time.monotonic() - started, 1e-6)
-                left = (len(todo) - index) / rate if rate else 0
-                print(f"  {index:,}/{len(todo):,} queried, {resolved:,} matched, "
-                      f"{rate * 60:.0f}/min, ~{left / 60:.0f} min left", flush=True)
-                save_json(cache_path, cache)
-                if checkpoint:
-                    # The CSV is regenerated whole, so do it on a coarser
-                    # interval than the cache, which is cheap to rewrite.
-                    write_output(os.path.join(args.out, "taxonworks.csv"),
-                                 cache, specimens)
+                        record = None
+                    if record:
+                        via, candidates = "gender", 1
+
+                if not record and sent and inat is not None:
+                    # TaxonWorks does not hold this name at all. Ask iNaturalist for
+                    # the ranks above it, species first and then the genus.
+                    try:
+                        # Only the genus, and only where the archive gives something
+                        # to check the answer against.
+                        genus = sent.split()[0]
+                        expect = {"family": (specimen_context.get(name, {})
+                                             .get("dwc:family") or ""),
+                                  "kingdom": (specimen_context.get(name, {})
+                                              .get("dwc:kingdom") or "")}
+                        for probe in (genus,):
+                            inat_record, pairs = inat.lookup(probe, expect)
+                            if pairs:
+                                cache[name] = {
+                                    "sent": probe, "via": "inaturalist", "ratio": "",
+                                    "candidates": 1,
+                                    "matched_name": inat_record.get("name", ""),
+                                    "matched_rank": inat_record.get("rank", ""),
+                                    "taxonworks_id": "",
+                                    "current_name": inat_record.get("name", ""),
+                                    "current_id": inat_record.get("id"),
+                                    "is_synonym": False,
+                                    "source": "inaturalist",
+                                    "lineage_raw": pairs,
+                                }
+                                resolved += 1
+                                break
+                        if name in cache:
+                            continue
+                    except Transient as error:
+                        print(f"  iNaturalist: {name}: {error}", flush=True)
+
+                if not record and sent:
+                    # No species-level match: place the record by its genus instead.
+                    # 'Curculio sp.' and 'Larinus cf. obtusus' can never match as
+                    # written, and a species absent from the project usually has its
+                    # genus present -- either way the higher ranks are recoverable,
+                    # which is all this fills anyway.
+                    genus = sent.split()[0]
+                    if genus and genus != sent:
+                        try:
+                            record, candidates = api.search(genus)
+                        except Transient:
+                            continue          # retried next run
+                        via = "genus" if record else via
+                if record:
+                    # Classify by the name in use now, but remember what was hit.
+                    accepted = api.current(record)
+                    cache[name] = {
+                        "sent": sent,
+                        "via": via,
+                        "ratio": ratio,
+                        "candidates": candidates,
+                        "matched_name": record.get("cached") or record.get("name") or "",
+                        "matched_rank": (record.get("rank_string") or "")
+                                        .rsplit("::", 1)[-1],
+                        "taxonworks_id": record.get("id"),
+                        "current_name": (accepted.get("cached")
+                                         or accepted.get("name") or ""),
+                        "current_id": accepted.get("id"),
+                        "is_synonym": accepted.get("id") != record.get("id"),
+                        # Written out rather than left to be inferred from the key
+                        # being missing: provenance should survive a cache read by
+                        # anything that was not this script.
+                        "source": "taxonworks",
+                        "lineage_raw": api.lineage(accepted),
+                    }
+                    resolved += 1
+                else:
+                    cache[name] = {"sent": sent, "via": "", "ratio": ratio,
+                                   "source": "", "candidates": candidates,
+                                   "matched_name": "", "matched_rank": "",
+                                   "taxonworks_id": "", "lineage_raw": []}
+            finally:
+                # Runs whatever the body did -- an early `continue` for a
+                # cached name, an iNaturalist hit, a stalled request. The
+                # progress line was previously skipped by every one of those.
+                if index % 25 == 0 or index == len(todo):
+                    checkpoint = index % 250 == 0 or index == len(todo)
+                    rate = index / max(time.monotonic() - started, 1e-6)
+                    left = (len(todo) - index) / rate if rate else 0
+                    print(f"  {index:,}/{len(todo):,} queried, {resolved:,} matched, "
+                          f"{rate * 60:.0f}/min, ~{left / 60:.0f} min left", flush=True)
+                    save_json(cache_path, cache)
+                    if checkpoint:
+                        # The CSV is regenerated whole, so do it on a coarser
+                        # interval than the cache, which is cheap to rewrite.
+                        write_output(os.path.join(args.out, "taxonworks.csv"),
+                                     cache, specimens)
     except KeyboardInterrupt:
         print("\nInterrupted -- keeping what was resolved so far", flush=True)
     finally:
