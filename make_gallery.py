@@ -75,7 +75,7 @@ TREES = [
 # array of indices into a shared vocabulary; -1 means that level is unknown.
 FIELDS = ["file", "catalog", "name", "status", "category", "institution",
           "coreid", "url", "publication", "levels", "source", "matched",
-          "licence", "licence_url"]
+          "licence", "licence_url", "pending"]
 
 
 # iDigBio lower-cases everything it indexes, so the archive yields 'animalia',
@@ -191,9 +191,15 @@ def resolve_ranks(item, taxonomy, authoritative):
                 or {})
     matched = external.get(TW_NAME, "")
     resolved, used_external = {}, False
+    # Values the archive already placed, so an external source cannot repeat one
+    # at a different rank: sources disagree about which rank a name sits at, and
+    # honouring both puts the same name on two levels of the tree.
+    placed = {v.lower() for v in from_archive.values() if v}
     for rank in RANKS:
         archive_value = from_archive[rank]
         outside_value = external.get(rank, "")
+        if outside_value and outside_value.lower() in placed and not archive_value:
+            outside_value = ""
         if outside_value and (authoritative or not archive_value):
             resolved[rank] = outside_value
             used_external = used_external or outside_value != archive_value
@@ -208,7 +214,53 @@ def resolve_ranks(item, taxonomy, authoritative):
     return resolved, source, matched
 
 
-def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim):
+ANCHOR_RANK = "dwc:family"      # the level a tree must not fragment
+
+
+def trim_tree(fields, resolved, value_of, tree_from):
+    """Drop leading ranks until each family is reached by exactly one route.
+
+    Ranks above family are the ones sources disagree about -- one archive puts
+    Coleoptera under Insecta and another under Hexapoda, and an external
+    nomenclator may rank the same name differently again. Every such
+    disagreement splits the family into a separate branch. Rather than pick a
+    winner, the coarsest levels are dropped until the family sits in the tree
+    once; they remain in the data and in each record's lineage.
+    """
+    if tree_from:
+        wanted = tree_from.lower()
+        for index, field in enumerate(fields):
+            if field.split(":", 1)[1].lower() == wanted:
+                return fields[index:]
+        sys.exit(f"--tree-from {tree_from}: not a rank in this tree "
+                 f"({', '.join(f.split(':', 1)[1] for f in fields)})")
+
+    if ANCHOR_RANK not in fields:
+        return fields
+    anchor = fields.index(ANCHOR_RANK)
+
+    def shown(item, values, field):
+        # Compare what the tree will display, not the raw value: sources differ
+        # in capitalisation, and 'curculionidae' and 'Curculionidae' become one
+        # node. Comparing raw values would call them two families with one route
+        # each and leave the split in place.
+        return present_rank(field, value_of(item, values, field))
+
+    for start in range(anchor + 1):
+        routes = {}
+        for _, item, values, _, _ in resolved:
+            family = shown(item, values, ANCHOR_RANK)
+            if not family:
+                continue
+            path = tuple(shown(item, values, f) for f in fields[start:anchor])
+            routes.setdefault(family, set()).add(path)
+        if all(len(paths) == 1 for paths in routes.values()):
+            return fields[start:]
+    return fields[anchor:]
+
+
+def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim,
+                  tree_from=None):
     items = dl.gather(archive_dir, dl.SCOPE_ALL, verbatim=verbatim)
     by_uuid = {i["media_uuid"]: i for i in items if i["media_uuid"]}
 
@@ -229,6 +281,17 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim):
             continue
         resolved.append((name, item) + resolve_ranks(item, taxonomy, authoritative))
 
+    # A specimen's remaining views, not downloaded yet. Only for specimens that
+    # already appear, so the page does not grow by the whole archive: the point
+    # is to show that a specimen is incomplete, not to list everything unfetched.
+    have = {item["media_uuid"] for _, item, _, _ in
+            ((n, i, v, sc) for n, i, v, sc, _ in resolved)}
+    shown_specimens = {item["coreid"] for _, item, _, _, _ in resolved}
+    for item in items:
+        if item["coreid"] in shown_specimens and item["media_uuid"] not in have:
+            resolved.append((None, item) + resolve_ranks(item, taxonomy,
+                                                         authoritative))
+
     # A level nothing populates would add an "unplaced" step to every branch for
     # no information, so drop it. dwc:tribe reappears by itself the moment a
     # --taxonomy file supplies it.
@@ -240,6 +303,8 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim):
         active = [f for f in fields
                   if any(value_of(item, values, f)
                          for _, item, values, _, _ in resolved)]
+        if label == "Taxonomy":
+            active = trim_tree(active, resolved, value_of, tree_from)
         trees.append({"label": label,
                       "fields": active,
                       "labels": [f.split(":", 1)[1] for f in active]})
@@ -257,7 +322,7 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim):
     entries = []
     for name, item, values, source, matched in resolved:
         entries.append([
-            name,
+            name or "",
             item.get("dwc:catalogNumber", ""),
             present_name(item.get("dwc:scientificName", "")),
             capitalise(tidy(item.get("dwc:typeStatus", ""))),
@@ -275,6 +340,7 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim):
             # as "unknown" when it means "the publisher said nothing".
             item.get("rights") or "(none stated)",
             item.get("rights_url", ""),
+            0 if name else 1,          # pending: known to the archive, not on disk
         ])
     # Group a specimen's several views together. coreid (the occurrence UUID) is
     # the identity -- a catalogue number is only unique within an institution, so
@@ -397,7 +463,29 @@ PAGE = """<!doctype html>
   dialog::backdrop { background: rgba(0,0,0,.72); }
   .viewer { display: grid; grid-template-columns: minmax(0,1fr) 310px; }
   @media (max-width: 760px) { .viewer { grid-template-columns: 1fr; } }
-  .viewer img { width: 100%; max-height: 84vh; object-fit: contain; background: #000; }
+  .stage { display: flex; flex-direction: column; min-width: 0; background: #000; }
+  .stage img { width: 100%; max-height: 74vh; object-fit: contain; }
+  .strip { display: flex; gap: 6px; padding: 8px; overflow-x: auto;
+    background: rgba(0,0,0,.55); }
+  .strip:empty { display: none; }
+  .strip button { border: 2px solid transparent; border-radius: 6px; padding: 0;
+    background: none; cursor: pointer; flex: 0 0 auto; line-height: 0; }
+  .strip img { width: 68px; height: 68px; object-fit: cover; border-radius: 4px;
+    opacity: .55; }
+  .strip button.on { border-color: var(--accent); }
+  .strip button.on img { opacity: 1; }
+  .strip button.hidden img { opacity: .28; }
+  .strip .n { color: #bbb; font-size: 11px; align-self: center; padding: 0 6px;
+    white-space: nowrap; }
+  .pending { display: none; min-height: 40vh; align-items: center;
+    justify-content: center; color: #999; font-size: 14px; text-align: center;
+    background: repeating-linear-gradient(45deg, #1a1a1a 0 10px, #151515 10px 20px); }
+  #vpending[style*="none"] { display: none !important; }
+  .strip button.pending-thumb img { opacity: .3; }
+  .strip button.pending-thumb { position: relative; }
+  .strip button.pending-thumb::after { content: "⬇"; position: absolute;
+    inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 20px; }
   .info { padding: 18px 20px; overflow-y: auto; max-height: 84vh; }
   .info h2 { margin: 0 0 12px; font-size: 15px; word-break: break-word; }
   .info dt { color: var(--muted); font-size: 11px; text-transform: uppercase;
@@ -431,7 +519,11 @@ PAGE = """<!doctype html>
 <dialog id="viewer">
   <button class="close" onclick="viewer.close()" aria-label="Close">&times;</button>
   <div class="viewer">
-    <img id="vimg" alt="">
+    <div class="stage">
+      <img id="vimg" alt="">
+      <div id="vpending" class="pending"></div>
+      <div id="vstrip" class="strip"></div>
+    </div>
     <div class="info" id="vinfo"></div>
   </div>
 </dialog>
@@ -480,7 +572,7 @@ function buildTree(records, t) {
 /* A download confined to one lineage would otherwise open on a single
    "animalia" row; walk past every level that does not branch. */
 function openTrunk(t) {
-  let node = buildTree(rows, t), here = [];
+  let node = buildTree(GRID, t), here = [];
   for (;;) {
     // An "unplaced" sibling is not a branch worth stopping at, so only count
     // named children when deciding whether the lineage still runs straight.
@@ -515,7 +607,7 @@ function renderTrees() {
   const host = document.getElementById("aside");
   host.innerHTML = "";
   TREES.forEach((tree, t) => {
-    const root = buildTree(rows.filter(r => matchesExcept(r, t)), t);
+    const root = buildTree(GRID.filter(r => matchesExcept(r, t)), t);
     const term = state[t].find.trim().toLowerCase();
     findMatch(root, t, term, []);
 
@@ -604,6 +696,15 @@ function renderLevel(node, prefix, t, term) {
 }
 
 /* ---- filtering ------------------------------------------------------ */
+// Every image of a specimen, in file order. A specimen is its coreid: catalogue
+// numbers repeat across institutions and are often absent.
+const GRID = rows.filter(r => !r.pending);   // pending files have nothing to show
+const BY_SPECIMEN = new Map();
+rows.forEach((r, i) => {
+  if (!BY_SPECIMEN.has(r.coreid)) BY_SPECIMEN.set(r.coreid, []);
+  BY_SPECIMEN.get(r.coreid).push(i);
+});
+
 const grid = document.getElementById("grid");
 const q = document.getElementById("q");
 const catSel = document.getElementById("cat");
@@ -615,9 +716,9 @@ function fill(sel, label, values) {
     [...new Set(values)].filter(Boolean).sort()
       .map(v => `<option>${v}</option>`).join("");
 }
-fill(catSel, "Category", rows.map(r => r.category));
-fill(instSel, "Institution", rows.map(r => r.institution));
-fill(licSel, "Licence", rows.map(r => r.licence));
+fill(catSel, "Category", GRID.map(r => r.category));
+fill(instSel, "Institution", GRID.map(r => r.institution));
+fill(licSel, "Licence", GRID.map(r => r.licence));
 
 function matchesFields(r) {
   const term = q.value.trim().toLowerCase();
@@ -647,12 +748,12 @@ function esc(s) {
 }
 
 function apply() {
-  shown = rows.filter(matchesAll);
+  shown = GRID.filter(matchesAll);
   grid.innerHTML = "";
   drawn = 0;
   document.getElementById("count").textContent =
     `${shown.length.toLocaleString()} images` +
-    (shown.length !== rows.length ? ` of ${rows.length.toLocaleString()} on disk` : "") +
+    (shown.length !== GRID.length ? ` of ${GRID.length.toLocaleString()} on disk` : "") +
     ` — ${TOTAL.toLocaleString()} media records in the archive`;
   renderChips();
   renderTrees();
@@ -734,12 +835,32 @@ grid.addEventListener("click", e => {
   if (card) open(+card.dataset.i);
 });
 
-let current = -1;
+let current = -1;          // index into `shown`, for arrow-key stepping
 function open(i) {
   current = i;
   const r = shown[i];
   if (!r) return;
-  document.getElementById("vimg").src = MEDIA + r.file;
+  show(rows.indexOf(r));
+  viewer.showModal();
+}
+
+/* Show one image plus every other view of the same specimen, so a specimen is
+   examined as a whole rather than one file at a time. Views filtered out of the
+   grid are still offered here, dimmed -- they belong to the specimen whether or
+   not the current filter matches them. */
+function show(rowIndex) {
+  const r = rows[rowIndex];
+  if (!r) return;
+  const image = document.getElementById("vimg");
+  const note = document.getElementById("vpending");
+  image.style.display = r.pending ? "none" : "";
+  note.style.display = r.pending ? "" : "none";
+  if (r.pending) {
+    note.innerHTML = `not downloaded yet<br>
+      <a href="${esc(r.url)}" target="_blank">open the original</a>`;
+  } else {
+    image.src = MEDIA + r.file;
+  }
   const lineage = TREES.map((tree, t) => tree.labels.map((label, d) =>
     r.paths[t][d] ? `<span>${label}</span> ${esc(r.paths[t][d])}` : ""
   ).filter(Boolean).join("<br>")).filter(Boolean).join("<br><br>");
@@ -764,7 +885,35 @@ function open(i) {
         <a href="${RECORD_URL}${esc(r.coreid)}" target="_blank">iDigBio record</a><br>
         <a href="${esc(r.url)}" target="_blank">original media URL</a></dd>
     </dl>`;
-  viewer.showModal();
+
+  const siblings = BY_SPECIMEN.get(r.coreid) || [rowIndex];
+  const strip = document.getElementById("vstrip");
+  strip.innerHTML = "";
+  if (siblings.length > 1) {
+    const count = document.createElement("span");
+    count.className = "n";
+    const missing = siblings.filter(j => rows[j].pending).length;
+    count.textContent = missing
+      ? `${siblings.length} views, ${missing} not downloaded`
+      : `${siblings.length} views`;
+    strip.appendChild(count);
+    const visible = new Set(shown);
+    siblings.forEach(j => {
+      const sib = rows[j];
+      const button = document.createElement("button");
+      button.className = (j === rowIndex ? "on " : "") +
+                         (sib.pending ? "pending-thumb"
+                                      : visible.has(sib) ? "" : "hidden");
+      button.title = sib.pending ? "not downloaded yet"
+                   : visible.has(sib) ? sib.file
+                   : sib.file + " (hidden by the current filter)";
+      button.innerHTML = sib.pending
+        ? `<img alt="">`
+        : `<img loading="lazy" src="${MEDIA}${esc(sib.file)}" alt="">`;
+      button.onclick = () => show(j);
+      strip.appendChild(button);
+    });
+  }
 }
 
 addEventListener("keydown", e => {
@@ -799,6 +948,10 @@ def main():
                         help="skip occurrence_raw.csv; faster, but iDigBio's indexed "
                              "ranks drop the epithet whenever it rewrites a name to "
                              "a senior synonym (54.6%% species coverage vs 91.3%%)")
+    parser.add_argument("--tree-from", metavar="RANK",
+                        help="start the taxonomy tree at this rank (e.g. family, "
+                             "superfamily). By default the coarsest ranks are "
+                             "dropped until each family appears once")
     parser.add_argument("--strict", action="store_true",
                         help="fail instead of warning when files in the media "
                              "folder cannot be matched to the archive")
@@ -820,18 +973,28 @@ def main():
             found = os.path.join(args.root, "taxonomy", "taxonworks.csv")
             if os.path.exists(found):
                 shown = os.path.relpath(found, args.root)
-                if dl.ask_yes_no(f"merge {shown}", True):
+                rows = sum(1 for _ in open(found, encoding="utf-8")) - 1
+                if dl.ask_yes_no(f"add classifications from {shown} "
+                                 f"({rows:,} specimens)", True):
                     args.taxonomy = found
-                    args.taxonomy_authoritative = dl.ask_yes_no(
-                        "let it overwrite ranks the archive already has", False)
+                    print("    where both have a rank, which wins?")
+                    print("      [1] the archive, TaxonWorks only fills gaps "
+                          "[default]")
+                    print("      [2] TaxonWorks, replacing the archive's "
+                          "family/genus/etc")
+                    args.taxonomy_authoritative = dl._ask(
+                        "which", "1").strip() == "2"
         if not args.no_verbatim:
             args.no_verbatim = not dl.ask_yes_no(
-                "use verbatim ranks from occurrence_raw.csv (better species)", True)
+                "prefer the publisher's own ranks in occurrence_raw.csv over "
+                "iDigBio's indexed ones", True)
         if not args.strict:
             args.strict = dl.ask_yes_no(
-                "fail if media files match no archive record", False)
+                "stop with an error if media/ holds files this archive "
+                "does not list", False)
         if not args.open:
-            args.open = dl.ask_yes_no("open the gallery when done", True)
+            args.open = dl.ask_yes_no("open the gallery in a browser when built",
+                                      True)
         print()
 
 
@@ -843,7 +1006,7 @@ def main():
     print("Reading archive ...", flush=True)
     entries, total, vocabulary, trees, unnamed, unmatched = build_entries(
         args.archive, media_dir, taxonomy, args.taxonomy_authoritative,
-        not args.no_verbatim)
+        not args.no_verbatim, args.tree_from)
 
     if unmatched or unnamed:
         print()
