@@ -809,12 +809,18 @@ def main():
     args.media = args.media or os.path.join(args.root, "media")
     args.out = args.out or os.path.join(args.root, "gallery")
 
+    media_dir = os.path.abspath(args.media)
+    if not os.path.isdir(media_dir):
+        sys.exit(f"no media folder at {media_dir} -- run download_media.py first")
+    os.makedirs(args.out, exist_ok=True)
+
     if dl.interactive():
         print("Options (press Enter to accept each default):")
         if args.taxonomy is None:
             found = os.path.join(args.root, "taxonomy", "taxonworks.csv")
             if os.path.exists(found):
-                if dl.ask_yes_no(f"merge {os.path.relpath(found)}", True):
+                shown = os.path.relpath(found, args.root)
+                if dl.ask_yes_no(f"merge {shown}", True):
                     args.taxonomy = found
                     args.taxonomy_authoritative = dl.ask_yes_no(
                         "let it overwrite ranks the archive already has", False)
@@ -828,10 +834,6 @@ def main():
             args.open = dl.ask_yes_no("open the gallery when done", True)
         print()
 
-    media_dir = os.path.abspath(args.media)
-    if not os.path.isdir(media_dir):
-        sys.exit(f"no media folder at {media_dir} -- run download_media.py first")
-    os.makedirs(args.out, exist_ok=True)
 
     taxonomy = load_taxonomy(args.taxonomy)
     if args.taxonomy:

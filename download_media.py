@@ -371,15 +371,20 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
 # always wins, and nothing is asked when there is no terminal to answer -- cron
 # and pipes get the defaults instead of blocking forever.
 def interactive():
-    return sys.stdin.isatty()
+    # Both ends matter: with stdout piped the question is swallowed by the pipe
+    # buffer and the run looks hung while it waits for an answer nobody saw.
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _ask(question, default_label):
     try:
         return input(f"  {question} [{default_label}]: ").strip()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         print()
-        return ""
+        return ""          # no more input: take the default
+    except KeyboardInterrupt:
+        # Interrupting the questions means "do not run", not "use the defaults".
+        sys.exit("\ncancelled")
 
 
 def ask_yes_no(question, default=False):
@@ -393,14 +398,11 @@ def ask_int(question, default=None):
     answer = _ask(question, str(default) if default is not None else "all")
     if not answer:
         return default
-    if answer.isdigit():
+    try:
         return int(answer)
-    print(f"    not a number, using {default}")
-    return default
-
-
-def ask_text(question, default=""):
-    return _ask(question, default or "none") or default
+    except ValueError:
+        print(f"    not a number, using {default}")
+        return default
 
 
 def ask_scope():
@@ -518,12 +520,17 @@ def main():
         # rather than blocking on a prompt nobody can answer.
         scope = ask_scope() if interactive() else SCOPE_TYPES
 
-    if interactive() and args.workers is None and args.limit is None:
+    if interactive() and (args.workers is None or args.limit is None):
         print("\nOptions (press Enter to accept each default):")
-        args.workers = ask_int("parallel downloads", 8)
-        args.limit = ask_int("stop after how many files", None)
+        if args.workers is None:
+            args.workers = ask_int("parallel downloads", 8)
+        if args.limit is None:
+            args.limit = ask_int("stop after how many files", None)
         print()
-    args.workers = args.workers or 8
+    if args.workers is None:
+        args.workers = 8
+    if args.workers < 1:
+        sys.exit("--workers must be at least 1")
 
     label = "type specimens only" if scope == SCOPE_TYPES else "all media"
     print(f"\nReading archive ({label}) ...", flush=True)

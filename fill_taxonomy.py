@@ -242,10 +242,17 @@ UNMAPPED_RANKS = collections.Counter()
 
 
 def save_json(path, data):
-    """Checkpoint write that tolerates its directory having gone away."""
+    """Checkpoint write: atomic, and tolerant of its directory having gone away.
+
+    Written to a temporary file and renamed, so an interrupt mid-write leaves
+    the previous complete file rather than a truncated one -- the whole point of
+    checkpointing is that stopping never costs more than the last interval.
+    """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=0)
+    os.replace(tmp, path)
 
 
 def write_output(path, cache, specimens):
@@ -257,7 +264,8 @@ def write_output(path, cache, specimens):
     """
     written = 0
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as fh:
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=OUT_COLUMNS)
         writer.writeheader()
         for coreid, name in specimens:
@@ -282,11 +290,16 @@ def write_output(path, cache, specimens):
                     row[column.split(":", 1)[1]] = value
             writer.writerow(row)
             written += 1
+    os.replace(tmp, path)     # readers never see a half-written file
     return written
 
 
-def ranks_of(entry):
-    """Darwin Core ranks for a cache entry, re-mapped from the raw lineage."""
+def ranks_of(entry, note_unmapped=False):
+    """Darwin Core ranks for a cache entry, re-mapped from the raw lineage.
+
+    `note_unmapped` is set only by the report, which passes over each name once.
+    Counting on every call would multiply the tally by the number of checkpoints.
+    """
     if not entry:
         return {}
     pairs = entry.get("lineage_raw")
@@ -296,7 +309,7 @@ def ranks_of(entry):
     for tail, value in pairs:
         column = RANK_MAP.get(tail)
         if column is None:
-            if tail not in ("", "nomenclaturalrank"):
+            if note_unmapped and tail not in ("", "nomenclaturalrank"):
                 UNMAPPED_RANKS[tail] += 1      # reported, never dropped in silence
             continue
         if column not in ranks:
@@ -324,6 +337,7 @@ def write_report(path, cache, specimens, media_counts):
     groups it curates, not all of nomenclature -- so absence is reported as its
     own status rather than folded into failure.
     """
+    UNMAPPED_RANKS.clear()
     by_name = {}
     for coreid, name in specimens:
         record = by_name.setdefault(name, {"specimens": 0, "media": 0})
@@ -334,7 +348,7 @@ def write_report(path, cache, specimens, media_counts):
     for name, counts in by_name.items():
         entry = cache.get(name)
         status = classify(name, entry)
-        ranks = ranks_of(entry)
+        ranks = ranks_of(entry, note_unmapped=True)
         rows.append({
             "status": status,
             "queried_name": name,
@@ -514,13 +528,16 @@ def main():
                 if r.split(":", 1)[1].lower()
                 in {x.strip().lower() for x in args.missing_ranks.split(",") if x.strip()}]
     if dl.interactive() and not (args.report_only or args.list_only):
+        # Only ask about what was not already decided on the command line.
         print("Options (press Enter to accept each default):")
         args.report_only = dl.ask_yes_no(
             "only report on the existing cache, without querying", False)
         if not args.report_only:
-            args.retry_misses = dl.ask_yes_no(
-                "re-query names previously found absent", False)
-            args.limit = dl.ask_int("stop after how many specimens", None)
+            if not args.retry_misses:
+                args.retry_misses = dl.ask_yes_no(
+                    "re-query names previously found absent", False)
+            if args.limit is None:
+                args.limit = dl.ask_int("stop after how many specimens", None)
         print()
 
     specimens, names, total, media_counts = specimens_to_resolve(
@@ -639,11 +656,15 @@ def main():
                                "matched_name": "", "matched_rank": "",
                                "taxonworks_id": "", "lineage_raw": []}
             if index % 25 == 0 or index == len(names):
+                checkpoint = index % 250 == 0 or index == len(names)
                 print(f"  {index:,}/{len(names):,} queried, {resolved:,} matched",
                       flush=True)
                 save_json(cache_path, cache)
-                write_output(os.path.join(args.out, "taxonworks.csv"),
-                             cache, specimens)
+                if checkpoint:
+                    # The CSV is regenerated whole, so do it on a coarser
+                    # interval than the cache, which is cheap to rewrite.
+                    write_output(os.path.join(args.out, "taxonworks.csv"),
+                                 cache, specimens)
     except KeyboardInterrupt:
         print("\nInterrupted -- keeping what was resolved so far", flush=True)
     finally:

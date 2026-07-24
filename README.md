@@ -69,18 +69,19 @@ python3 ../download_media.py --scope all    # every media record
 ```
 
 All three scripts ask for their options at startup, so they are useful run bare
-with no flags. Press Enter to accept each default. A flag given on the command
-line is never asked about, and nothing is asked when there is no terminal to
-answer — cron and pipes get the defaults instead of blocking forever. For the
-download that means `--scope types`.
+with no flags. Press Enter to accept each default; Ctrl-C cancels rather than
+accepting them. A flag given on the command line is never asked about, and
+nothing is asked unless **both** stdin and stdout are a terminal — so cron,
+pipes and redirects get the defaults instead of blocking on a question whose
+text the pipe swallowed. For the download that means `--scope types`.
 
 Running `--scope types` first and `--scope all` later is safe: resume matches on
 media UUID, so the type files are recognised and skipped. `manifest.csv` is a
 snapshot rewritten each run, so the second supersedes the first;
 `download_log.csv` is append-only and keeps the full history.
 
-Other flags: `--limit N` (small trial), `--workers N` (default 8), `--dry-run`,
-`--timeout`, `--retries`.
+Other flags: `--limit N` (small trial), `--workers N` (default 8, asked if
+omitted), `--dry-run`, `--timeout`, `--retries`.
 
 ### File naming and resume
 
@@ -142,9 +143,37 @@ is fetched at runtime — a `file://` page cannot read a local CSV, and this way
 there is no server to run. It is a snapshot; re-run it after downloading more.
 
 Thumbnails lazy-load in pages of 120. Search covers catalogue number, taxon,
-typeStatus, institution and publication. Clicking an image opens it full size
-with its metadata and lineage, plus links to the iDigBio record and the original
-media URL; arrow keys step through results.
+typeStatus, institution, publication, licence and any externally matched name.
+Dropdowns filter by type category, institution and licence. Clicking an image
+opens it full size with its metadata and lineage, plus links to the iDigBio
+record and the original media URL; arrow keys step through results.
+
+### Licence filter
+
+Licence terms come from `dcterms:rights` with the URL from
+`xmpRights:WebStatement`, and the detail panel links one to the other. Records
+where the publisher stated nothing are shown as **`(none stated)`** rather than
+left blank: an empty cell reads as "unknown" when what it means is "not
+stated", and that is exactly the group to isolate before reusing anything. Both
+fields are also columns in `manifest.csv`.
+
+Licence sits on the *media* record, not the specimen, so different images of one
+specimen can carry different terms — filtering by licence can therefore split a
+specimen's views. That is faithful to the data, not a bug.
+
+### Capitalisation
+
+iDigBio lower-cases what it indexes, so the archive yields `animalia`, `usnm`,
+`united states`. The gallery restores conventional capitalisation for display:
+taxon names above species are capitalised, epithets stay lower case, place names
+are title-cased (`Democratic Republic of the Congo`), and institution codes are
+upper-cased.
+
+Each rule applies **only to an all-lower-case value**, so anything already
+properly cased is left untouched — externally resolved names arrive as
+`Entiminae` and `Ptilopus` and must not be mangled. This is presentation only:
+the stored data, the manifest and the search index are unchanged, so searching
+still works in lower case.
 
 If files in the media folder match no record in the archive — usually another
 dataset's download sharing the folder — you get a warning naming examples.
@@ -321,7 +350,10 @@ each (`--pause`). Both caches persist, so stopping and restarting is cheap.
 `--missing-only` skips specimens that already have every rank in
 `--missing-ranks` (default `family,genus,tribe,subfamily`). Since most archives
 carry no tribe or subfamily at all, the default usually selects everything —
-narrow it (`--missing-ranks genus`) for a short run.
+narrow it (`--missing-ranks genus`) for a short run. `--list-only` prints the
+names that would be queried and exits without touching the network.
+`--user-token` with `--project-id` authenticates as a user instead of using a
+project token.
 
 **Expect a substantial `absent-from-project` share.** A TaxonWorks project covers
 the groups its curators maintain, not all of nomenclature; absence is an
@@ -372,7 +404,7 @@ example a record listing four ordinary citations followed by
 | file | |
 |------|--|
 | `media/<name>.<ext>`      | the media files |
-| `media/manifest.csv`      | every record considered, rewritten each run: status, filename, URL, coreid, taxonomy, geography, type category, citation fields |
+| `media/manifest.csv`      | every record considered, rewritten each run: status, filename, URL, coreid, taxonomy, geography, licence, type category, citation fields |
 | `media/download_log.csv`  | append-only, one row per attempt, flushed immediately; survives interruption and accumulates across runs |
 | `gallery/gallery.html`    | the browsable gallery |
 | `taxonomy/taxonworks.csv` | external classification, if resolved |
