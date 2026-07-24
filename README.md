@@ -13,18 +13,21 @@ cd my-dataset                    # a directory containing dwca/
 python3 ../download_media.py     # asks: type specimens only, or all media?
 python3 ../fill_taxonomy.py      # optional, see TaxonWorks below
 python3 ../make_gallery.py
-python3 gallery/serve.py         # open it, served so drag-and-drop works
+python3 gallery/serve.py         # open it
 ```
 
-Each script asks for its options at startup, so none of them need flags. The
-build also writes `gallery/serve.sh`, a shell wrapper you can double-click —
-file managers open `.py` files in an editor, and may need telling to run
-executable text files at all.
+Each script asks for its options at startup, so none of them need flags — the
+flags exist for automation and are listed in `--help`. The build also writes
+`gallery/serve.sh`, a shell wrapper you can double-click; file managers open
+`.py` files in an editor, and may need telling to run executable text files at
+all.
 
 ## Requirements
 
-Python 3.9+ and `requests` (`pip install requests`). A browser to view the
-gallery; no server needed.
+Python 3.9+ and `requests` (`pip install requests`), and a browser. The gallery
+opens straight from disk, though a few things — opening the folder in a file
+manager, saving an image by dragging it out — need it served, which
+`gallery/serve.py` does for you.
 
 ## Getting an archive
 
@@ -44,28 +47,22 @@ DwC-A *extensions*, joined on `coreid`, the iDigBio occurrence UUID.
 
 ## Layout
 
-The scripts are the whole of the source; each dataset is an untracked working
-directory. A dataset is any directory containing a `dwca/`, so several downloads
-coexist without duplicating code.
+The scripts sit beside the dataset they work on. A dataset is a directory
+containing a `dwca/`; everything else is produced from it and is untracked.
 
 ```
 .
 ├── download_media.py
 ├── make_gallery.py
 ├── fill_taxonomy.py
-├── dwca/                  a dataset can sit at the repo root ...
-├── media/                     downloaded files + manifest.csv + download_log.csv
-├── gallery/                   gallery.html + serve.py/serve.sh, written by the build
-├── taxonomy/                  taxonworks.csv + resumable API cache
-└── some-other-dataset/    ... or in its own directory
-    ├── dwca/
-    └── media/  gallery/  taxonomy/
+├── dwca/          the unpacked archive
+├── media/         downloaded files + manifest.csv + download_log.csv
+├── gallery/       gallery.html + serve.py/serve.sh, written by the build
+└── taxonomy/      taxonworks.csv + match_report.csv + API cache
 ```
 
-Each script operates on the dataset in the current directory — strictly, the
+Each script works on the dataset in the current directory — strictly, the
 nearest directory holding a `dwca/`, falling back to where the scripts live.
-`--root` selects a different one; `--archive`, `--media`, `--out` override
-individually.
 
 ## Downloading
 
@@ -155,41 +152,21 @@ Dropdowns filter by type category, institution and licence. Clicking an image
 opens it full size with its metadata and lineage, plus links to the iDigBio
 record and the original media URL; arrow keys step through results.
 
-### Dragging images into other sites
+### Getting an image into another site
 
-Opened from disk, the page is a `file://` document and **may not read its own
-images** — `fetch` is blocked and a canvas readback taints. A dragged `<img>`
-can then offer only its URL, so a site you drop it on follows it as a link and
-navigates instead of uploading.
+Use **show these files in the file manager** in the detail panel, then drag from
+there. That is the route that works, and the section below describes it.
 
-Every build writes **`gallery/serve.py`** next to the page. Run it and the
-gallery opens over http, where it can read its own images and attach a real file
-to the drag:
+Dragging an image straight from the gallery onto another site does **not** work,
+and cannot be made to. A page may not hand a file to another page: files
+attached to a drag stay inside the document that started it, so an upload form
+receives a **link** and follows it. Serving the page does not change that; it is
+a browser rule, not a limitation of the gallery.
 
-```bash
-python3 gallery/serve.py            # opens the browser; Ctrl-C to stop
-python3 gallery/serve.py 8123       # another port; 0 picks a free one
-```
-
-The launcher is standalone and regenerated on every build, so the gallery folder
-keeps working if it is copied elsewhere. `make_gallery.py --serve` does the same
-thing immediately after building.
-
-| origin | drag carries | drop target sees |
-|--------|--------------|------------------|
-| `file://`   | `text/uri-list`, `DownloadURL`            | a link |
-| `http://127.0.0.1` | `text/uri-list`, `DownloadURL`, **`Files`** | an `image/jpeg` file |
-
-The file is fetched when you hover or press on an image, because `dragstart`
-cannot wait for it. `DownloadURL` is set either way, which lets Chromium save
-the image when dragged to a file manager. When the page cannot do this it says
-so under the heading rather than failing silently.
-
-`--serve` binds to `127.0.0.1` only, and `--port 0` picks a free port.
-
-The bytes are fetched when an image is hovered or opened, so a drag begun the
-instant a thumbnail appears may still fall back to a link. Cards, the modal
-image and the filmstrip are all draggable.
+The drag also carries a `DownloadURL`, which Chromium is documented to honour by
+saving the file when the drag ends on a file manager or the desktop. That path
+is **unverified here** and reported not to work in practice, so treat the file
+manager button as the answer rather than this.
 
 ### Opening the files in a file manager
 
@@ -201,7 +178,8 @@ files.
 
 **This needs `serve.py`.** It works by the launcher running a command on your
 machine (`dolphin --select …`, `nautilus --select …`, and so on), which no web
-page can do by itself. A gallery opened from disk, or copied to a static web
+page can do by itself — and it is the practical answer to the drag limitation
+above. A gallery opened from disk, or copied to a static web
 host, cannot offer it: browsers may not start local programs, and the button
 says so instead of failing quietly. Only names that resolve inside `media/` are
 accepted, and `xdg-open` on the folder is the fallback where no known file
@@ -309,16 +287,33 @@ dataset's download sharing the folder — you get a warning naming examples.
 
 ### Trees
 
-The sidebar holds a taxonomy tree (kingdom → … → species) and a geography tree
-(continent → country → stateProvince), each with per-node counts, a type-ahead
-filter and its own selection. Counts respond to the search box and the other
-tree, but not to a tree's own selection, so sibling counts stay meaningful.
-Selections appear as removable chips.
+The sidebar holds a taxonomy tree and a geography tree (continent → country →
+stateProvince), each with per-node counts, a type-ahead filter and its own
+selection. Counts respond to the search box and the other tree, but not to a
+tree's own selection, so sibling counts stay meaningful. Selections appear as
+removable chips.
 
 Records missing a level sit under an explicit *unplaced (rank)* node rather than
 being dropped, so counts stay honest. Levels that do not branch are opened
-automatically, and a rank nothing populates is left out entirely — `dwc:tribe`
-reappears by itself once something fills it.
+automatically, and a rank nothing populates is left out entirely.
+
+**The taxonomy tree does not start at kingdom.** Sources disagree above family —
+one record files Coleoptera under `Insecta`, another under `Hexapoda`, and an
+external nomenclator may rank the same name differently again — and every
+disagreement puts the family in a second branch. The coarsest levels are
+therefore dropped until each family is reached exactly once, which on these
+archives leaves `family → subfamily → tribe → … → species`. The dropped ranks
+stay in the data and in each record's lineage panel; only the tree skips them.
+`--tree-from RANK` overrides the choice.
+
+### Looking at a specimen
+
+Opening an image shows the **specimen**, not the file: every view sharing that
+`coreid` appears as a filmstrip, labelled *5 views*. Views filtered out of the
+grid are still offered, dimmed — they belong to the specimen whether or not the
+current filter matches them. Media the archive lists but that are not downloaded
+appear as placeholders marked *not downloaded yet*, with a link to the original,
+so a specimen never looks complete when it is not.
 
 ## Classification
 

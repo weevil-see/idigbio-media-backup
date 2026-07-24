@@ -365,7 +365,7 @@ def write_output(path, cache, specimens):
                    "similarity": entry.get("ratio", ""),
                    "taxonworks_id": entry.get("current_id")
                                     or entry["taxonworks_id"],
-                   "source": "taxonworks"}
+                   "source": entry.get("source", "taxonworks")}
             for column, value in ranks.items():
                 if column in FILLABLE_RANKS:
                     row[column.split(":", 1)[1]] = value
@@ -404,7 +404,9 @@ def classify(name, entry):
         return "not-queried"
     if ranks_of(entry):
         return {"genus": "matched-via-genus",
-                "gender": "matched-gender-variant"}.get(entry.get("via"), "matched")
+                "gender": "matched-gender-variant",
+                "inaturalist": "matched-in-inaturalist"}.get(entry.get("via"),
+                                                            "matched")
     if OPEN_NOMENCLATURE.search(name):
         return "open-nomenclature"
     if not normalise_name(name):
@@ -451,6 +453,7 @@ def write_report(path, cache, specimens, media_counts):
             "media_files": counts["media"],
         })
     order = {"matched": 0, "matched-gender-variant": 1, "matched-via-genus": 2,
+             "matched-in-inaturalist": 3,
              "absent-from-project": 3, "open-nomenclature": 4, "unparsable": 5,
              "not-queried": 6}
     rows.sort(key=lambda r: (order.get(r["status"], 9), -r["media_files"],
@@ -538,6 +541,78 @@ def normalise_name(name):
     return " ".join(kept[:3])       # genus + species + subspecies at most
 
 
+INAT_BASE = "https://api.inaturalist.org/v1"
+
+
+class INaturalist:
+    """Higher classification for names a TaxonWorks project does not hold.
+
+    Used only as a fallback, and only for ranks above the species. iNaturalist
+    carries the intermediate ranks that matter here -- subfamily, tribe,
+    subtribe -- which the GBIF backbone does not, and it answers without a
+    token. Its ranks are its own: they are recorded as coming from it, never
+    merged with TaxonWorks' as though one source said both.
+    """
+
+    def __init__(self, pause=1.0, timeout=45.0, retries=3):
+        self.session = requests.Session()
+        self.session.headers["User-Agent"] = dl.USER_AGENT
+        self.pause = pause
+        self.timeout = timeout
+        self.retries = retries
+        self.calls = 0
+
+    def get(self, path, **params):
+        for attempt in range(1, self.retries + 1):
+            try:
+                response = self.session.get(f"{INAT_BASE}{path}", params=params,
+                                            timeout=self.timeout)
+            except requests.RequestException as error:
+                if attempt == self.retries:
+                    raise Transient(f"{type(error).__name__}: {error}") from error
+                time.sleep(min(2 ** attempt, 30))
+                continue
+            self.calls += 1
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt == self.retries:
+                    raise Transient(f"HTTP {response.status_code}")
+                time.sleep(min(2 ** attempt, 30))
+                continue
+            if response.status_code >= 400:
+                return None
+            time.sleep(self.pause)       # their guidance is 60 requests a minute
+            return response.json()
+        raise Transient("retries exhausted")
+
+    def lookup(self, genus, expect=None):
+        """(record, [(rank, name)]) for a genus, checked against `expect`.
+
+        Only the genus is asked for: nothing below it is used, and a genus
+        resolves where a species often will not. Genus names are homonyms
+        across kingdoms -- Prunella is a bird and a mint -- so a candidate is
+        accepted only if its ancestry agrees with what the archive already
+        says, family first and kingdom failing that. Without something to check
+        against, nothing is accepted.
+        """
+        expect = {k: v.lower() for k, v in (expect or {}).items() if v}
+        if not expect:
+            return None, []
+        found = self.get("/taxa", q=genus, rank="genus", per_page=10)
+        for candidate in (found or {}).get("results", []):
+            if (candidate.get("name") or "").lower() != genus.lower():
+                continue
+            full = self.get(f"/taxa/{candidate['id']}")
+            record = (full or {}).get("results", [candidate])[0]
+            pairs = [[a["rank"], a["name"]] for a in record.get("ancestors", [])
+                     if a.get("rank") and a.get("name")]
+            lineage = {rank: value.lower() for rank, value in pairs}
+            if all(lineage.get(rank) == value for rank, value in expect.items()
+                   if rank in lineage):
+                if any(rank in lineage for rank in expect):
+                    return record, pairs
+        return None, []
+
+
 def query_name(item):
     """The best name to ask TaxonWorks about, in order of trustworthiness.
 
@@ -609,6 +684,10 @@ def main():
                         help="attempts per request before giving up (default: 4)")
     parser.add_argument("--no-verbatim", action="store_true",
                         help="ignore occurrence_raw.csv when deciding what is missing")
+    parser.add_argument("--inaturalist", action="store_true",
+                        help="for names the TaxonWorks project does not hold, "
+                             "take the ranks above species from iNaturalist "
+                             "instead. Recorded as coming from there")
     parser.add_argument("--gender-variants", action="store_true",
                         help="when an exact match fails, accept the same epithet "
                              "spelled for a genus of another gender (albidus / "
@@ -644,6 +723,14 @@ def main():
 
     specimens, names, total, media_counts = specimens_to_resolve(
         args.archive, args.missing_only, not args.no_verbatim, required)
+    # What the archive already asserts, to check an outside answer against.
+    specimen_context = {}
+    for item in dl.gather(args.archive, dl.SCOPE_TYPES,
+                          verbatim=not args.no_verbatim):
+        specimen_context.setdefault(query_name(item), {
+            "dwc:family": item.get("dwc:family", ""),
+            "dwc:kingdom": item.get("dwc:kingdom", ""),
+        })
     if args.limit:
         specimens = specimens[: args.limit]
         names = sorted({n for _, n in specimens})
@@ -705,6 +792,7 @@ def main():
 
     api = TaxonWorks(base_url, token, args.project_id,
                      args.user_token, args.pause, args.timeout, args.retries)
+    inat = INaturalist(timeout=args.timeout) if args.inaturalist else None
     api.names = ancestors
     resolved, stalled = 0, 0
     MAX_STALLED = 25
@@ -728,6 +816,39 @@ def main():
                 continue
             via = "name"
             stalled = 0
+            if not record and sent and inat is not None:
+                # TaxonWorks does not hold this name at all. Ask iNaturalist for
+                # the ranks above it, species first and then the genus.
+                try:
+                    # Only the genus, and only where the archive gives something
+                    # to check the answer against.
+                    genus = sent.split()[0]
+                    expect = {"family": (specimen_context.get(name, {})
+                                         .get("dwc:family") or ""),
+                              "kingdom": (specimen_context.get(name, {})
+                                          .get("dwc:kingdom") or "")}
+                    for probe in (genus,):
+                        inat_record, pairs = inat.lookup(probe, expect)
+                        if pairs:
+                            cache[name] = {
+                                "sent": probe, "via": "inaturalist", "ratio": "",
+                                "candidates": 1,
+                                "matched_name": inat_record.get("name", ""),
+                                "matched_rank": inat_record.get("rank", ""),
+                                "taxonworks_id": "",
+                                "current_name": inat_record.get("name", ""),
+                                "current_id": inat_record.get("id"),
+                                "is_synonym": False,
+                                "source": "inaturalist",
+                                "lineage_raw": pairs,
+                            }
+                            resolved += 1
+                            break
+                    if name in cache:
+                        continue
+                except Transient as error:
+                    print(f"  iNaturalist: {name}: {error}", flush=True)
+
             if not record and sent:
                 # No species-level match: place the record by its genus instead.
                 # 'Curculio sp.' and 'Larinus cf. obtusus' can never match as
@@ -787,7 +908,9 @@ def main():
     report_path = os.path.join(args.out, "match_report.csv")
     summarise(write_report(report_path, cache, specimens, media_counts))
 
-    print(f"\n{api.calls:,} API calls, {written:,} specimen rows -> {out_path}")
+    extra = f" + {inat.calls:,} iNaturalist" if inat is not None else ""
+    print(f"\n{api.calls:,} TaxonWorks API calls{extra}, "
+          f"{written:,} specimen rows -> {out_path}")
     print(f"Per-name report -> {report_path}")
     print("Nothing in dwca/ was modified.")
     print(f"Next: python3 make_gallery.py --taxonomy {out_path}")
