@@ -684,10 +684,10 @@ def main():
                         help="attempts per request before giving up (default: 4)")
     parser.add_argument("--no-verbatim", action="store_true",
                         help="ignore occurrence_raw.csv when deciding what is missing")
-    parser.add_argument("--inaturalist", action="store_true",
-                        help="for names the TaxonWorks project does not hold, "
-                             "take the ranks above species from iNaturalist "
-                             "instead. Recorded as coming from there")
+    parser.add_argument("--no-inaturalist", action="store_true",
+                        help="do not fall back to iNaturalist for names the "
+                             "TaxonWorks project does not hold. The fallback is "
+                             "on by default and recorded as coming from there")
     parser.add_argument("--gender-variants", action="store_true",
                         help="when an exact match fails, accept the same epithet "
                              "spelled for a genus of another gender (albidus / "
@@ -723,10 +723,13 @@ def main():
                 args.gender_variants = dl.ask_yes_no(
                     "accept the same epithet spelled for another genus gender "
                     "(albidus/albida)", True)
-            if not args.inaturalist:
-                args.inaturalist = dl.ask_yes_no(
+            if not args.no_inaturalist:
+                # More than half the names in a typical archive are outside any
+                # one project, so the fallback is where most of the subfamily
+                # and tribe placements come from. Default yes; it costs time.
+                args.no_inaturalist = not dl.ask_yes_no(
                     "for names TaxonWorks does not hold, take the ranks above "
-                    "species from iNaturalist (slower)", False)
+                    "species from iNaturalist (slower)", True)
             if args.limit is None:
                 args.limit = dl.ask_int("stop after how many specimens", None)
         print()
@@ -802,7 +805,7 @@ def main():
 
     api = TaxonWorks(base_url, token, args.project_id,
                      args.user_token, args.pause, args.timeout, args.retries)
-    inat = INaturalist(timeout=args.timeout) if args.inaturalist else None
+    inat = None if args.no_inaturalist else INaturalist(timeout=args.timeout)
     api.names = ancestors
     resolved, stalled = 0, 0
     started = time.monotonic()
