@@ -38,7 +38,6 @@ import argparse
 import collections
 import csv
 import re
-import difflib
 import getpass
 import importlib.util
 import json
@@ -56,6 +55,23 @@ dl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dl)
 
 DEFAULT_BASE = "https://sfg.taxonworks.org/api/v1"
+
+# Latin gender agreement: an epithet takes the gender of its genus, so one name
+# has up to three written forms. Each tuple is one declension class; a form is
+# swapped for its siblings, leaving the stem untouched.
+GENDER_CLASSES = [("us", "a", "um"), ("er", "era", "erum"), ("er", "ra", "rum"),
+                  ("is", "e"), ("or", "rix")]
+
+
+def gender_forms(epithet):
+    """Every gendered spelling of one epithet, itself included."""
+    forms = {epithet}
+    for endings in GENDER_CLASSES:
+        for ending in endings:
+            if epithet.endswith(ending) and len(epithet) > len(ending) + 2:
+                stem = epithet[: -len(ending)]
+                forms.update(stem + other for other in endings)
+    return forms
 
 # Credentials live in a git-ignored api.yml, looked for in the dataset directory
 # first and then next to the scripts, so one file can serve every dataset or a
@@ -199,12 +215,14 @@ class TaxonWorks:
                                   len(r.get("cached") or "")))
         return found[0], candidates
 
-    def similar(self, name, threshold):
-        """Closest name above `threshold`, for spellings that differ slightly.
+    def gender_variant(self, name):
+        """The same epithet agreeing with a different genus, or None.
 
-        Off by default. A near match is a guess, so the ratio and the name it
-        settled on are recorded and reported: a wrong genus placed silently is
-        worse than a record left unplaced.
+        Moving a species to a genus of another gender changes the ending of the
+        epithet and nothing else: albidus, albida, albidum are one name. That is
+        a rule, not a resemblance, so matching on it cannot confuse two species
+        the way a similarity score does -- carinatus and ecarinatus have
+        different stems and never meet.
         """
         # The API matches substrings, so a misspelling returns nothing at all.
         # Probe with progressively shorter keys until some names come back, then
@@ -222,29 +240,24 @@ class TaxonWorks:
                 found = found.get("taxon_names") or found.get("data") or []
             if found:
                 break
-        # Only names in the same genus are considered. Congeneric epithets sit
-        # very close together -- 'Conotrachelus carinatus' and 'C. ecarinatus'
-        # score 0.979, 'aratus' and 'armatus' 0.976, and 609 such pairs exist in
-        # one archive at 0.90 -- so a near match within a genus is a coin toss
-        # between siblings. It costs nothing here: only ranks above the epithet
-        # are ever written, and siblings share all of them. A match in the wrong
-        # genus would corrupt every rank, so it is refused however close.
-        wanted_genus = name.split()[0].lower()
-        best, best_ratio, rejected = None, 0.0, 0.0
+        parts = name.split()
+        if len(parts) < 2:
+            return None, ""
+        wanted = set(gender_forms(parts[1].lower()))
+        if not wanted:
+            return None, ""
         for candidate in found or []:
             label = candidate.get("cached") or candidate.get("name") or ""
-            if not label:
+            words = label.split()
+            if len(words) < 2:
                 continue
-            ratio = difflib.SequenceMatcher(None, name.lower(),
-                                            label.lower()).ratio()
-            if label.split()[0].lower() != wanted_genus:
-                rejected = max(rejected, ratio)
+            # The genus must still be the one asked about: a different genus
+            # would replace every rank this fills, so it is never accepted.
+            if words[0].lower() != parts[0].lower():
                 continue
-            if ratio > best_ratio:
-                best, best_ratio = candidate, ratio
-        if best is not None and best_ratio >= threshold:
-            return best, round(best_ratio, 3)
-        return None, round(max(best_ratio, rejected), 3)
+            if words[1].lower() in wanted and words[1].lower() != parts[1].lower():
+                return candidate, words[1].lower()
+        return None, ""
 
     def current(self, record):
         """The name in use now, when the match is a synonym or old combination.
@@ -391,7 +404,7 @@ def classify(name, entry):
         return "not-queried"
     if ranks_of(entry):
         return {"genus": "matched-via-genus",
-                "fuzzy": "matched-approximately"}.get(entry.get("via"), "matched")
+                "gender": "matched-gender-variant"}.get(entry.get("via"), "matched")
     if OPEN_NOMENCLATURE.search(name):
         return "open-nomenclature"
     if not normalise_name(name):
@@ -437,7 +450,7 @@ def write_report(path, cache, specimens, media_counts):
             "specimens": counts["specimens"],
             "media_files": counts["media"],
         })
-    order = {"matched": 0, "matched-via-genus": 1, "matched-approximately": 2,
+    order = {"matched": 0, "matched-gender-variant": 1, "matched-via-genus": 2,
              "absent-from-project": 3, "open-nomenclature": 4, "unparsable": 5,
              "not-queried": 6}
     rows.sort(key=lambda r: (order.get(r["status"], 9), -r["media_files"],
@@ -465,13 +478,11 @@ def summarise(rows):
               f"  {media:7,} media files")
 
     matched = [r for r in rows if r["status"].startswith("matched")]
-    approximate = [r for r in rows if r["status"] == "matched-approximately"]
-    if approximate:
-        print(f"\n  {len(approximate):,} names matched only approximately -- "
-              f"check these:")
-        for row in approximate[:5]:
-            print(f"    {row['similarity']}  {row['queried_name']} -> "
-                  f"{row['taxonworks_name']}")
+    variants = [r for r in rows if r["status"] == "matched-gender-variant"]
+    if variants:
+        print(f"\n  {len(variants):,} matched as a gender variant:")
+        for row in variants[:5]:
+            print(f"    {row['queried_name']} -> {row['taxonworks_name']}")
     renamed = [r for r in matched if r.get("is_synonym")]
     if renamed:
         print(f"  {len(renamed):,} names resolved to a different current "
@@ -598,11 +609,10 @@ def main():
                         help="attempts per request before giving up (default: 4)")
     parser.add_argument("--no-verbatim", action="store_true",
                         help="ignore occurrence_raw.csv when deciding what is missing")
-    parser.add_argument("--fuzzy", nargs="?", type=float, const=0.90,
-                        metavar="RATIO",
-                        help="when an exact match fails, accept the closest name "
-                             "at or above RATIO (default 0.90). Off unless given; "
-                             "every approximate match is reported with its score")
+    parser.add_argument("--gender-variants", action="store_true",
+                        help="when an exact match fails, accept the same epithet "
+                             "spelled for a genus of another gender (albidus / "
+                             "albida / albidum). Same genus only")
     parser.add_argument("--retry-misses", action="store_true",
                         help="re-query names cached as unmatched (after a "
                              "matching improvement), keeping the hits")
