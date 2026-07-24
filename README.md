@@ -199,8 +199,8 @@ classification is never mistaken for a published one.
 ### fill_taxonomy.py — TaxonWorks
 
 Resolves names against the [TaxonWorks API](https://api.taxonworks.org) and
-writes `taxonomy/taxonworks.csv` in exactly that format. The archive is opened
-read-only.
+writes `taxonomy/taxonworks.csv` in exactly the format above. The archive is
+opened read-only.
 
 TaxonWorks is a general nomenclatural workbench covering all taxonomic groups
 and all the codes (ICZN, ICN, ICNP), so this is not limited to any one group.
@@ -208,6 +208,8 @@ What it can answer is bounded by the *project* a token belongs to, not by taxon.
 
 ```bash
 python3 ../fill_taxonomy.py --missing-only    # prompts for the token
+python3 ../fill_taxonomy.py --report-only     # report from the cache, no API calls
+python3 ../fill_taxonomy.py --retry-misses    # re-query names cached as misses
 python3 ../make_gallery.py --taxonomy taxonomy/taxonworks.csv
 ```
 
@@ -217,25 +219,105 @@ by default, not written to disk — you are prompted at the start of each run
 exists for automation. A project token is not secret in TaxonWorks' model; it
 marks a project's data as public. Create one in your project's preferences.
 
-It fills only ranks **above** the species epithet. `dwc:scientificName` and
-`dwc:specificEpithet` are left exactly as published — an external database
-supplies the scaffold above a name, it does not rename a specimen. The matched
-name is recorded separately as `taxonworks_name`, shown in the gallery as a
-voucher for how the placement was reached and included in the search index.
+#### What it may and may not change
 
-Output is keyed on **`coreid`**, never on the name, because the indexed
-`scientificName` is not a reliable key: shortened to the bare genus, one string
-can stand for dozens of distinct species, and a name-keyed lookup would stamp a
-single lineage onto all of them. The name queried is the publisher's verbatim
-one where available, else a genus/epithet pair, else the indexed name.
+It fills only ranks **above** the species epithet. The ladder runs the full
+range — kingdom, subkingdom, infrakingdom, superphylum, phylum, subphylum,
+superclass, class, subclass, infraclass, superorder, order, suborder,
+infraorder, superfamily, epifamily, family, subfamily, supertribe, tribe,
+subtribe, genus, subgenus, section, series — because listing a rank costs
+nothing: the gallery drops any level nothing fills. Darwin Core has terms for
+some of these; the rest are prefixed `tw:` and can only come from an external
+source. `dwc:specificEpithet`, `dwc:infraspecificEpithet` and `dwc:scientificName`
+are left exactly as published, and `scientificName` is not even an output
+column: an external database supplies the scaffold above a name, it does not
+rename a specimen.
 
-Responses are cached in `taxonomy/taxonworks_cache.json`, so an interrupted run
-resumes. `--list-only` shows the work without touching the network;
-`--missing-only` restricts to names still lacking a rank.
+The name TaxonWorks matched is *appended*, never substituted — recorded as
+`taxonworks_name`, shown in the gallery's detail panel as a voucher for how the
+placement was reached, and included in the search index.
 
-> **Status:** name selection, caching, CSV output and the auth failure path are
-> tested; the resolution path itself has not been exercised against a live
-> project token. Treat the TaxonWorks integration as unproven until you have.
+A rank is only overwritten when the archive left it empty, unless you pass
+`--taxonomy-authoritative`.
+
+#### How names are matched
+
+Records are keyed on **`coreid`**, never on the name: the indexed
+`scientificName` is shortened to the bare genus whenever iDigBio cannot match a
+species, so one string can stand for dozens of distinct taxa and a name-keyed
+lookup would stamp a single lineage onto all of them.
+
+The name queried is the publisher's verbatim one where available, else a
+genus/epithet pair, else the indexed name. It is then normalised, because
+publishers write authorities into the name and TaxonWorks matches on the name
+alone:
+
+```
+Acalles basalis LeConte 1876       ->  Acalles basalis
+Alluria spinosa (Fabricius, 1801)  ->  Alluria spinosa
+```
+
+Under both codes the genus is capitalised and every epithet is lower case, while
+an authority is capitalised — so the leading capitalised word plus the lower-case
+words after it are kept, and everything from the next capital is dropped.
+
+If the species still does not match, the **genus** is tried on its own. This is
+what places open nomenclature — `Curculio sp.`, `Larinus cf. obtusus` can never
+match as written — and species that are simply absent from the project. Such
+records still gain family, tribe and genus, which is all that gets filled
+anyway. The gallery marks them `(placed by genus)` so a genus-level placement is
+never mistaken for a species-level determination.
+
+#### The match report
+
+Every run writes `taxonomy/match_report.csv`, one row per queried name, and
+prints a summary. `--report-only` regenerates it from the cache without touching
+the network — safe to run while a resolve is still going.
+
+| status | meaning |
+|--------|---------|
+| `matched`             | the name itself resolved |
+| `matched-via-genus`   | species unmatched; placed by its genus |
+| `absent-from-project` | not in the project the token belongs to |
+| `open-nomenclature`   | `sp.`, `cf.`, `aff.`, `indet.` — cannot match by design |
+| `unparsable`          | nothing usable left after normalisation |
+| `not-queried`         | not in the cache yet — not reached, or excluded by `--missing-only` |
+
+Columns: the raw name, what was actually sent to the API, how it matched, the
+returned name/rank/id, how many candidates the search returned, which ranks were
+filled, the resulting lineage, and how many specimens and media files the name
+covers — so a name accounting for hundreds of images is visible immediately.
+
+A large `not-queried` share simply means the run has not finished. Resolving is
+not fast: each new name costs one search call, a second if the genus fallback
+runs, plus one call per ancestor while walking the lineage, with a pause between
+each (`--pause`). Both caches persist, so stopping and restarting is cheap.
+
+`--missing-only` skips specimens that already have every rank in
+`--missing-ranks` (default `family,genus,tribe,subfamily`). Since most archives
+carry no tribe or subfamily at all, the default usually selects everything —
+narrow it (`--missing-ranks genus`) for a short run.
+
+**Expect a substantial `absent-from-project` share.** A TaxonWorks project covers
+the groups its curators maintain, not all of nomenclature; absence is an
+ordinary outcome, not a failure, which is why it is reported as its own status.
+
+#### Files, and what deleting them does
+
+Nothing is fetched at view time — the gallery embeds its data at build time, so
+these only matter when you next run a script.
+
+| file | role | delete it and … |
+|------|------|-----------------|
+| `taxonomy/taxonworks_cache.json` | per-name results, so an interrupted resolve does not re-ask | nothing downstream changes; the next resolve re-queries those names |
+| `taxonomy/taxonworks_ancestors.json` | the lineage records behind them, shared between names | the next resolve re-walks every lineage — slow, but harmless |
+| `taxonomy/taxonworks.csv`        | the actual input to the gallery | the next `make_gallery.py` run falls back to archive-only classification |
+| `taxonomy/match_report.csv`      | the report, regenerable any time | nothing; recreate with `--report-only` |
+| `gallery/gallery.html`           | a snapshot with values already embedded | it keeps working until you rebuild it |
+
+The enrichment is opt-in either way: without `--taxonomy` the gallery is
+archive-only regardless of what sits in `taxonomy/`. Pointing `--taxonomy` at a
+missing file is an error, not a silent fallback.
 
 ## How type records are selected
 
@@ -269,6 +351,9 @@ example a record listing four ordinary citations followed by
 | `media/download_log.csv`  | append-only, one row per attempt, flushed immediately; survives interruption and accumulates across runs |
 | `gallery/gallery.html`    | the browsable gallery |
 | `taxonomy/taxonworks.csv` | external classification, if resolved |
+| `taxonomy/match_report.csv` | per-name account of what matched and what did not |
+| `taxonomy/taxonworks_cache.json` | per-name API cache, so an interrupted resolve resumes |
+| `taxonomy/taxonworks_ancestors.json` | cached lineage records, shared across names |
 
 ## Licence
 

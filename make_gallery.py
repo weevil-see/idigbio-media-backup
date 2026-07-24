@@ -90,6 +90,9 @@ def load_taxonomy(path):
     table = {"coreid": {}, "name": {}}
     if not path:
         return table
+    if not os.path.exists(path):
+        sys.exit(f"--taxonomy {path} does not exist.\n"
+                 f"Omit the flag to build the gallery from the archive alone.")
     with open(path, newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         columns = {(c or "").strip().lower(): c for c in reader.fieldnames or []}
@@ -108,6 +111,7 @@ def load_taxonomy(path):
             sys.exit(f"{path}: needs a 'coreid' or 'scientificName' column")
         matched_column = (columns.get("taxonworks_name")
                           or columns.get("matched_name"))
+        via_column = columns.get("matched_via")
         for row in reader:
             values = {rank: (row.get(src) or "").strip()
                       for rank, src in rank_columns.items()}
@@ -115,7 +119,10 @@ def load_taxonomy(path):
             if not values:
                 continue
             if matched_column and (row.get(matched_column) or "").strip():
-                values[TW_NAME] = row[matched_column].strip()
+                name = row[matched_column].strip()
+                if via_column and (row.get(via_column) or "").strip() == "genus":
+                    name += "  (placed by genus)"
+                values[TW_NAME] = name
             if key_column and (row.get(key_column) or "").strip():
                 table["coreid"][row[key_column].strip()] = values
             elif name_column and (row.get(name_column) or "").strip():

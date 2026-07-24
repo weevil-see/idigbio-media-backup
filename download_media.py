@@ -48,16 +48,38 @@ VERBATIM_NAME = "verbatim:scientificName"
 # Taxonomic ranks, coarse to fine. Kept as an explicit ordered list because the
 # gallery builds its tree from it, and because ranks left empty by the publisher
 # are meant to be fillable later from an external name-parsing source.
+# The full rank ladder, coarse to fine. Darwin Core has terms for only some of
+# these; the rest are prefixed `tw:` and can only ever come from an external
+# source. Listing a rank costs nothing -- the gallery drops any level nothing
+# fills -- so the ladder is kept complete rather than trimmed to one archive.
 TAXON_RANKS = [
     "dwc:kingdom",
+    "tw:subkingdom",
+    "tw:infrakingdom",
+    "tw:superphylum",
     "dwc:phylum",
+    "tw:subphylum",
+    "tw:superclass",
     "dwc:class",
+    "tw:subclass",
+    "tw:infraclass",
+    "tw:superorder",
     "dwc:order",
+    "tw:suborder",
+    "tw:infraorder",
+    "dwc:superfamily",
+    "tw:epifamily",
     "dwc:family",
-    "dwc:tribe",           # not in occurrence.csv at all -- external only
+    "dwc:subfamily",
+    "tw:supertribe",
+    "dwc:tribe",
+    "dwc:subtribe",
     "dwc:genus",
-    "dwc:subgenus",        # present in occurrence_raw.csv for ~5% of records
+    "dwc:subgenus",
+    "tw:section",
+    "tw:series",
     "dwc:specificEpithet",
+    "dwc:infraspecificEpithet",
 ]
 
 # Geographic hierarchy, coarse to fine -- the gallery browses it like the ranks.
