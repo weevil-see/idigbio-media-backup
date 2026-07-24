@@ -34,6 +34,7 @@ Usage:
 """
 
 import argparse
+import collections
 import csv
 import html
 import importlib.util
@@ -1159,15 +1160,25 @@ def main():
             found = os.path.join(args.root, "taxonomy", "taxonworks.csv")
             if os.path.exists(found):
                 shown = os.path.relpath(found, args.root)
-                rows = sum(1 for _ in open(found, encoding="utf-8")) - 1
+                # Named for TaxonWorks, but a project holds only the groups it
+                # curates and the rest came from the iNaturalist fallback. Say
+                # which, so the choice below is made about the actual mixture
+                # rather than about the file's name.
+                with open(found, encoding="utf-8", newline="") as fh:
+                    by_source = collections.Counter(
+                        (row.get("source") or "taxonworks").strip()
+                        for row in csv.DictReader(fh))
+                rows = sum(by_source.values())
+                mixture = ", ".join(f"{n:,} from {s or 'unrecorded'}"
+                                    for s, n in by_source.most_common())
                 if dl.ask_yes_no(f"add classifications from {shown} "
-                                 f"({rows:,} specimens)", True):
+                                 f"({rows:,} specimens: {mixture})", True):
                     args.taxonomy = found
                     print("    where both have a rank, which wins?")
-                    print("      [1] the archive, TaxonWorks only fills gaps "
+                    print("      [1] the archive, the file only fills gaps "
                           "[default]")
-                    print("      [2] TaxonWorks, replacing the archive's "
-                          "family/genus/etc")
+                    print("      [2] the file, replacing the archive's "
+                          "family/genus/etc — for every source above")
                     args.taxonomy_authoritative = dl._ask(
                         "which", "1").strip() == "2"
         if not args.no_verbatim:

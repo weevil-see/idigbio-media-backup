@@ -884,46 +884,42 @@ def main():
                         via, candidates = "gender", 1
 
                 if not record and sent and inat is not None:
-                    # TaxonWorks does not hold this name at all. Ask iNaturalist for
-                    # the ranks above it, species first and then the genus.
+                    # TaxonWorks does not hold this name at all. Ask iNaturalist
+                    # for the ranks above it. Only the genus is asked about, and
+                    # only where the archive gives something to check the answer
+                    # against.
                     try:
-                        # Only the genus, and only where the archive gives something
-                        # to check the answer against.
                         genus = sent.split()[0]
                         expect = {"family": (specimen_context.get(name, {})
                                              .get("dwc:family") or ""),
                                   "kingdom": (specimen_context.get(name, {})
                                               .get("dwc:kingdom") or "")}
-                        for probe in (genus,):
-                            inat_record, pairs = inat.lookup(probe, expect)
-                            if pairs:
-                                cache[name] = {
-                                    "sent": probe, "via": "inaturalist", "ratio": "",
-                                    "candidates": 1,
-                                    "matched_name": inat_record.get("name", ""),
-                                    "matched_rank": inat_record.get("rank", ""),
-                                    "taxonworks_id": "",
-                                    "current_name": inat_record.get("name", ""),
-                                    "current_id": inat_record.get("id"),
-                                    "is_synonym": False,
-                                    "source": "inaturalist",
-                                    "lineage_raw": pairs,
-                                }
-                                lineage = {r: v for r, v in pairs}
-                                outcome = ("found in iNaturalist: "
-                                           + " / ".join(filter(None, (
-                                               lineage.get("family"),
-                                               lineage.get("subfamily"),
-                                               lineage.get("tribe")))))
-                                resolved += 1
-                                inat_failures = 0
-                                placed = True
-                                break
-                        # Not `name in cache`: with --retry-misses the name is
-                        # already there as the old miss, so that test was true
-                        # for every retried name and skipped the genus fallback
-                        # and the miss branch entirely.
-                        if placed:
+                        inat_record, pairs = inat.lookup(genus, expect)
+                        if pairs:
+                            cache[name] = {
+                                "sent": genus, "via": "inaturalist", "ratio": "",
+                                "candidates": 1,
+                                "matched_name": inat_record.get("name", ""),
+                                "matched_rank": inat_record.get("rank", ""),
+                                "taxonworks_id": "",
+                                "current_name": inat_record.get("name", ""),
+                                "current_id": inat_record.get("id"),
+                                "is_synonym": False,
+                                "source": "inaturalist",
+                                "lineage_raw": pairs,
+                            }
+                            lineage = {r: v for r, v in pairs}
+                            outcome = ("found in iNaturalist: "
+                                       + " / ".join(filter(None, (
+                                           lineage.get("family"),
+                                           lineage.get("subfamily"),
+                                           lineage.get("tribe")))))
+                            resolved += 1
+                            inat_failures = 0
+                            # Not `name in cache`: with --retry-misses the name
+                            # is already there as the old miss, so that test was
+                            # true for every retried name and skipped the genus
+                            # fallback and the miss branch entirely.
                             continue
                     except Transient as error:
                         # Never asked, so never answered: falling through would
@@ -1010,8 +1006,11 @@ def main():
                     if checkpoint:
                         # The CSV is regenerated whole, so do it on a coarser
                         # interval than the cache, which is cheap to rewrite.
+                        # all_specimens, not the --limit slice: a run killed
+                        # between here and the final write would otherwise leave
+                        # taxonworks.csv holding only the few names queried.
                         write_output(os.path.join(args.out, "taxonworks.csv"),
-                                     cache, specimens)
+                                     cache, all_specimens)
     except KeyboardInterrupt:
         print("\nInterrupted -- keeping what was resolved so far", flush=True)
     finally:
