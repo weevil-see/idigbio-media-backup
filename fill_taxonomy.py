@@ -695,6 +695,8 @@ def main():
     parser.add_argument("--retry-misses", action="store_true",
                         help="re-query names cached as unmatched (after a "
                              "matching improvement), keeping the hits")
+    parser.add_argument("--quiet", action="store_true",
+                        help="only the periodic summary, not a line per name")
     parser.add_argument("--report-only", action="store_true",
                         help="write the match report from the existing cache "
                              "and exit; makes no API calls, so it can be run "
@@ -823,6 +825,7 @@ def main():
             print("  nothing left to query", flush=True)
 
         for index, name in enumerate(todo, 1):
+            outcome = "not found"          # replaced as soon as one is known
             try:
                 sent = normalise_name(name)
                 try:
@@ -831,7 +834,7 @@ def main():
                     # Leave it uncached so a later run retries it, rather than
                     # recording "absent" for something the API never answered.
                     stalled += 1
-                    print(f"  [{stalled}] {name}: {error}", flush=True)
+                    outcome = "no answer from TaxonWorks — will retry next run"
                     if stalled >= MAX_STALLED:
                         print(f"  giving up after {MAX_STALLED} unanswered requests; "
                               f"progress is saved, re-run to continue", flush=True)
@@ -875,6 +878,12 @@ def main():
                                     "source": "inaturalist",
                                     "lineage_raw": pairs,
                                 }
+                                lineage = {r: v for r, v in pairs}
+                                outcome = ("found in iNaturalist: "
+                                           + " / ".join(filter(None, (
+                                               lineage.get("family"),
+                                               lineage.get("subfamily"),
+                                               lineage.get("tribe")))))
                                 resolved += 1
                                 break
                         if name in cache:
@@ -918,7 +927,16 @@ def main():
                         "lineage_raw": api.lineage(accepted),
                     }
                     resolved += 1
+                    shown = (cache[name].get("current_name")
+                             or cache[name].get("matched_name") or "")
+                    how = {"genus": " — genus only", "gender": " — gender variant",
+                           "name": ""}.get(via, f" — {via}")
+                    outcome = f"found in TaxonWorks: {shown}{how}"
+                    if cache[name].get("is_synonym"):
+                        outcome += f"  [was {cache[name]['matched_name']}]"
                 else:
+                    outcome = ("not found in TaxonWorks"
+                               + (" or iNaturalist" if inat is not None else ""))
                     cache[name] = {"sent": sent, "via": "", "ratio": ratio,
                                    "source": "", "candidates": candidates,
                                    "matched_name": "", "matched_rank": "",
@@ -927,6 +945,12 @@ def main():
                 # Runs whatever the body did -- an early `continue` for a
                 # cached name, an iNaturalist hit, a stalled request. The
                 # progress line was previously skipped by every one of those.
+                if not args.quiet:
+                    # A resolve runs for hours; saying what each name came back
+                    # as is the difference between watching it work and watching
+                    # a counter.
+                    label = name if len(name) <= 44 else name[:43] + "…"
+                    print(f"    {label:46} {outcome}", flush=True)
                 if index % 25 == 0 or index == len(todo):
                     checkpoint = index % 250 == 0 or index == len(todo)
                     rate = index / max(time.monotonic() - started, 1e-6)

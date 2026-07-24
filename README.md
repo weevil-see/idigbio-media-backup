@@ -478,6 +478,24 @@ unifies 16 within-genus pairs, each one species written for two genders —
 
 Matches made this way are marked `matched-gender-variant` in the report.
 
+#### Watching it run
+
+A resolve takes hours, so it says what each name came back as, one line each:
+
+```
+  2,448 already resolved, 2,177 to query
+    Scalaventer subtropicus                    found in TaxonWorks: Scalaventer subtropicus
+    Larinus cf. obtusus                        found in TaxonWorks: Larinus — genus only
+    Cenocephalus quadrilobus                   found in iNaturalist: Curculionidae / Platypodinae / Tesserocerini
+    Farnia variabilis Cachan, 1952             not found
+    Acalles carinatus                          no answer from TaxonWorks — will retry next run
+  25/2,177 queried, 19 matched, 34/min, ~63 min left
+```
+
+`--quiet` leaves only the periodic summary. Note the difference between *not
+found*, which is cached and not asked again, and *no answer*, which is not
+cached and is retried on the next run.
+
 #### The match report
 
 Every run writes `taxonomy/match_report.csv`, one row per queried name, and
