@@ -9,21 +9,17 @@ Three scripts, no dependencies beyond `requests`. They work on any iDigBio
 DwC-A — nothing is specific to a taxonomic group.
 
 ```bash
-python3 start.py                 # menu: download, classify, build, open
-```
-
-or run the steps directly:
-
-```bash
 cd my-dataset                    # a directory containing dwca/
 python3 ../download_media.py     # asks: type specimens only, or all media?
+python3 ../fill_taxonomy.py      # optional, see TaxonWorks below
 python3 ../make_gallery.py
 python3 gallery/serve.py         # open it, served so drag-and-drop works
 ```
 
-`start.sh` and the generated `gallery/serve.sh` are shell wrappers for the two
-you might want to double-click; file managers open `.py` files in an editor,
-and may need telling to run executable text files at all.
+Each script asks for its options at startup, so none of them need flags. The
+build also writes `gallery/serve.sh`, a shell wrapper you can double-click —
+file managers open `.py` files in an editor, and may need telling to run
+executable text files at all.
 
 ## Requirements
 
@@ -54,7 +50,6 @@ coexist without duplicating code.
 
 ```
 .
-├── start.py               menu over the three steps; start.sh double-clicks it
 ├── download_media.py
 ├── make_gallery.py
 ├── fill_taxonomy.py
