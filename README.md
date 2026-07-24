@@ -211,6 +211,25 @@ Starting the launcher while an older copy is serving the same port stops that
 one first — but only if it is this script; anything else keeps the port and the
 new instance moves to a free one.
 
+### When an image may show a different specimen
+
+The archive links media to occurrences by `coreid`, and that link is sometimes
+wrong: a photograph of one specimen attached to another. Institutions name image
+files after the specimen photographed, so the archive carries the evidence —
+NHMUK `013885056_additional_3` sitting on a record catalogued `nhmuk013885065`,
+digits transposed.
+
+Titles hold several numbers (`010131654_127044_890916` is a barcode and two
+unrelated ids), so only numbers of the same length as the catalogue number are
+compared. If one matches, the title agrees; if numbers of that length exist and
+none matches, the image is flagged. A title numbered on another scheme entirely
+says nothing and is left alone. In one weevil archive that flagged **58 media
+across 12 specimens (0.09%)**, each a plausible transposition.
+
+Flagged records carry a `⚠ check` badge in the grid and an explanation in the
+detail panel, and a `title_check` column in `manifest.csv`. It is a prompt to
+look, not a verdict: the archive states the link and nothing here changes it.
+
 ### Licence filter
 
 Licence terms come from `dcterms:rights` with the URL from
@@ -356,6 +375,16 @@ placement was reached, and included in the search index.
 
 A rank is only overwritten when the archive left it empty, unless you pass
 `--taxonomy-authoritative`.
+
+#### Names that have changed since publication
+
+A published name is often not the current one: `Pandeleteius subtropicus Fall,
+1907` is now `Scalaventer subtropicus (Fall, 1907)`. Where a match is flagged
+invalid, it is followed to the current name through `cached_valid_taxon_name_id`
+and the classification is taken from there. Both are recorded —
+`taxonworks_name` for the name in use, `matched_name` for what the search hit,
+`is_synonym` marking the difference — and `dwc:scientificName` is untouched, so
+the published name stays and the interpretation sits beside it.
 
 #### How names are matched
 

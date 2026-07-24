@@ -34,6 +34,7 @@ csv.field_size_limit(10 ** 9)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+MULTIMEDIA_RAW_FILE = "multimedia_raw.csv"
 OCCURRENCE_FILE = "occurrence.csv"
 OCCURRENCE_RAW_FILE = "occurrence_raw.csv"
 MULTIMEDIA_FILE = "multimedia.csv"
@@ -335,6 +336,55 @@ def load_verbatim_ranks(archive_dir, wanted):
     return verbatim
 
 
+DIGIT_RUN = re.compile(r"\d{5,}")
+
+
+def load_media_titles(archive_dir, wanted):
+    """coreid -> the specimen numbers appearing in its media titles.
+
+    Institutions name image files after the specimen photographed -- NHM's
+    '013885056_additional_3', BMNH's 'Genus_species_Author-BMNH1237248-holotype'.
+    When that number disagrees with the occurrence's catalogue number, the
+    archive has attached a photograph of a different specimen, and only the
+    title records it: the media row cannot otherwise be told apart.
+    """
+    path = os.path.join(archive_dir, MULTIMEDIA_RAW_FILE)
+    if not os.path.exists(path):
+        return {}
+    titles = {}
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if "dcterms:title" not in (reader.fieldnames or []):
+            return {}
+        for row in reader:
+            coreid = row["coreid"]
+            if coreid not in wanted:
+                continue
+            for number in DIGIT_RUN.findall(row.get("dcterms:title") or ""):
+                titles.setdefault(coreid, set()).add(number)
+    return titles
+
+
+def check_title(catalog_number, numbers):
+    """'' when consistent or unknowable, else the number that disagrees.
+
+    Titles carry several numbers -- '010131654_127044_890916' is a barcode
+    followed by two unrelated ids -- so only those of the same length as the
+    catalogue number are comparable. If one of those matches, the title agrees;
+    if such a number exists and none matches, the image is of another specimen.
+    A title numbered on a different scheme entirely says nothing either way.
+    """
+    if not catalog_number or not numbers:
+        return ""
+    catalog_digits = re.sub(r"\D", "", catalog_number)
+    if not catalog_digits:
+        return ""
+    comparable = [n for n in sorted(numbers) if len(n) == len(catalog_digits)]
+    if not comparable or catalog_digits in comparable:
+        return ""
+    return " ".join(comparable)
+
+
 def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
     """Media records to download, each with its occurrence context attached.
 
@@ -345,6 +395,7 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
     media = read_media_rows(archive_dir)
     coreids = {m["coreid"] for m in media}
     context = load_occurrence_context(archive_dir, coreids)
+    titles = load_media_titles(archive_dir, coreids) if verbatim else {}
     if verbatim:
         for coreid, values in load_verbatim_ranks(archive_dir, coreids).items():
             fields = context.get(coreid)
@@ -360,6 +411,8 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
         if scope == SCOPE_TYPES and not has_type:
             continue
         row.update(fields or dict.fromkeys(OCCURRENCE_CONTEXT, ""))
+        row["title_check"] = check_title(row.get("dwc:catalogNumber", ""),
+                                         titles.get(row["coreid"]))
         if not has_type:
             row["type_category"] = "no-typestatus"
         items.append(row)
@@ -739,7 +792,8 @@ def main():
 
     manifest = os.path.join(out_dir, "manifest.csv")
     columns = (["status", "filename", "url", "coreid", "media_uuid", "media_type",
-                "format", "rights", "rights_url", "type_category"]
+                "format", "rights", "rights_url", "type_category",
+                "title_check"]
                + OCCURRENCE_CONTEXT
                + ["citation_roles", "cited_taxa", "publications", "cited_pages",
                   "detail"])

@@ -76,7 +76,7 @@ TREES = [
 # array of indices into a shared vocabulary; -1 means that level is unknown.
 FIELDS = ["file", "catalog", "name", "status", "category", "institution",
           "coreid", "url", "publication", "levels", "source", "matched",
-          "licence", "licence_url", "pending"]
+          "licence", "licence_url", "pending", "title_check"]
 
 
 # iDigBio lower-cases everything it indexes, so the archive yields 'animalia',
@@ -342,6 +342,7 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim,
             item.get("rights") or "(none stated)",
             item.get("rights_url", ""),
             0 if name else 1,          # pending: known to the archive, not on disk
+            item.get("title_check", ""),
         ])
     # Group a specimen's several views together. coreid (the occurrence UUID) is
     # the identity -- a catalogue number is only unique within an institution, so
@@ -460,6 +461,12 @@ PAGE = """<!doctype html>
     border-radius: 999px; background: var(--chip); color: var(--muted);
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .badge.citation { color: var(--accent); }
+  .badge.warnbadge { background: #7a2e2e; color: #ffd9d9; }
+  @media (prefers-color-scheme: light) {
+    .badge.warnbadge { background: #f6dede; color: #7a2e2e; }
+  }
+  .info dd.warn { background: #7a2e2e22; border-left: 3px solid #a24; padding:
+    7px 9px; border-radius: 5px; margin: 10px 0 0; font-size: 12.5px; }
   #empty, #more { grid-column: 1 / -1; color: var(--muted); padding: 30px 0;
     text-align: center; }
 
@@ -508,8 +515,8 @@ PAGE = """<!doctype html>
   <h1>Type specimen media</h1>
   <div class="sub" id="count"></div>
   <div class="sub" id="filehint" style="display:none">
-    opened from a file — dragging an image gives a link, not a file.
-    Re-run with <code>--serve</code> to drag images into other sites.</div>
+    opened from a file — run <code>gallery/serve.py</code> to enable
+    <em>show these files in the file manager</em>.</div>
   <div id="chips"></div>
   <div class="controls">
     <input type="search" id="q" placeholder="Search catalogue no., taxon, typeStatus, publication…">
@@ -550,7 +557,7 @@ const rows = DATA.map(a => {
   FIELDS.forEach((f, i) => o[f] = a[i]);
   o.paths = o.levels.map(ix => ix.map(i => i < 0 ? "" : VOCAB[i]));
   o._hay = [o.catalog, o.name, o.status, o.institution, o.publication, o.matched,
-            o.licence,
+            o.licence, o.title_check ? "title-mismatch " + o.title_check : "",
             ...o.paths.flat()].join(" ").toLowerCase();
   return o;
 });
@@ -706,47 +713,26 @@ function renderLevel(node, prefix, t, term) {
 /* ---- filtering ------------------------------------------------------ */
 // Every image of a specimen, in file order. A specimen is its coreid: catalogue
 // numbers repeat across institutions and are often absent.
-/* Dragging an <img> offers only its URL, so a drop target treats it as a link
-   and navigates instead of uploading. Attaching a real File makes it a file
-   drop -- but the bytes can only be read when the page is served over http,
-   since a file:// page may not fetch its own images. Serve with --serve. */
+/* A page cannot hand a file to another page. Files added to a drag here stay
+   inside this document, so a drop on another site sees a link and follows it --
+   that is a browser rule, not something the page can arrange around.
+
+   What does work: DownloadURL, which lets Chromium save the image when it is
+   dragged to a file manager or the desktop; and the button below, which asks
+   the local server to open the folder with the specimen's files selected, ready
+   to drag from there. Both need the page served, since a file:// document may
+   not read its own images. */
 const CAN_READ_FILES = location.protocol !== "file:";
 const REVEAL_LABEL = "show these files in the file manager";
-const FILE_CACHE = new Map();
-
-async function fileFor(r) {
-  if (!CAN_READ_FILES || r.pending) return null;
-  if (!FILE_CACHE.has(r.file)) {
-    FILE_CACHE.set(r.file, (async () => {
-      try {
-        const response = await fetch(MEDIA + r.file);
-        const blob = await response.blob();
-        return new File([blob], r.file, { type: blob.type || "image/jpeg" });
-      } catch { return null; }
-    })());
-    FILE_CACHE.get(r.file).then(file => {
-      const slot = FILE_CACHE.get(r.file);
-      if (slot) slot.file = file;      // dragstart is synchronous; keep it ready
-    });
-  }
-  return FILE_CACHE.get(r.file);
-}
-
+// Dropping onto another site needs a real file, which only the file manager can
+// give it, so this is the route rather than a nicety.
 function armDrag(img, r) {
-  // The bytes must be in hand before dragstart fires, which cannot await.
-  const warm = () => { fileFor(r); };
-  img.addEventListener("pointerdown", warm);
-  img.addEventListener("mouseenter", warm);
   img.addEventListener("dragstart", event => {
     const url = new URL(MEDIA + r.file, location.href).href;
-    // Lets a drag to the desktop or a file manager save the file (Chromium).
-    event.dataTransfer.setData(
-      "DownloadURL", `${r.licence_url ? "image/jpeg" : "image/jpeg"}:${r.file}:${url}`);
+    // Chromium reads this when the drag ends on a file manager or the desktop,
+    // and saves the file there. It has no effect on a drop onto another page.
+    event.dataTransfer.setData("DownloadURL", `image/jpeg:${r.file}:${url}`);
     event.dataTransfer.setData("text/uri-list", url);
-    const pending = FILE_CACHE.get(r.file);
-    if (pending && pending.file) {
-      event.dataTransfer.items.add(pending.file);   // a genuine file drop
-    }
   });
 }
 
@@ -858,6 +844,8 @@ function draw() {
          <div class="cat">${esc(r.catalog) || "—"}</div>
          <div class="sci">${esc(r.name)}</div>
          <span class="badge ${esc(r.category)}">${esc(r.status) || r.category}</span>
+         ${r.title_check ? '<span class="badge warnbadge" title="the image title '
+                         + 'names a different specimen">&#9888; check</span>' : ""}
        </div>`;
     armDrag(el.querySelector("img"), r);   // cards are dragged far more often
     frag.appendChild(el);                  // than the modal image
@@ -916,7 +904,6 @@ function show(rowIndex) {
   } else {
     image.src = MEDIA + r.file;
     armDrag(image, r);
-    fileFor(r);                      // warm it while the image is being looked at
   }
   const lineage = TREES.map((tree, t) => tree.labels.map((label, d) =>
     r.paths[t][d] ? `<span>${label}</span> ${esc(r.paths[t][d])}` : ""
@@ -924,6 +911,10 @@ function show(rowIndex) {
   document.getElementById("vinfo").innerHTML = `
     <h2>${esc(r.catalog) || "(no catalogue number)"}</h2>
     <dl>
+      ${r.title_check ? `<dd class="warn">The publisher titled this image
+        <b>${esc(r.title_check)}</b>, but this specimen is
+        <b>${esc(r.catalog)}</b> — it may show a different specimen.
+        The archive links them; nothing here changed that.</dd>` : ""}
       <dt>Scientific name</dt><dd><em>${esc(r.name) || "—"}</em></dd>
       ${r.matched ? `<dt>TaxonWorks match</dt><dd><em>${esc(r.matched)}</em>
         <span class="ext">· placement only, name unchanged</span></dd>` : ""}

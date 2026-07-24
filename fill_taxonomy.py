@@ -38,6 +38,7 @@ import argparse
 import collections
 import csv
 import re
+import difflib
 import getpass
 import importlib.util
 import json
@@ -123,8 +124,8 @@ FILLABLE_RANKS = [r for r in dl.TAXON_RANKS
 # Keyed on coreid, one row per specimen. Keying on the name would be wrong:
 # iDigBio shortens dwc:scientificName to the genus whenever it cannot match the
 # species, so 'diabrotica' alone covers 98 distinct taxa across 5,634 records.
-OUT_COLUMNS = (["coreid", "queried_name", "taxonworks_name", "taxonworks_rank",
-                "matched_via", "taxonworks_id"]
+OUT_COLUMNS = (["coreid", "queried_name", "taxonworks_name", "matched_name",
+                "taxonworks_rank", "matched_via", "taxonworks_id"]
                + [c.split(":", 1)[1] for c in FILLABLE_RANKS] + ["source"])
 
 
@@ -198,6 +199,56 @@ class TaxonWorks:
                                   len(r.get("cached") or "")))
         return found[0], candidates
 
+    def similar(self, name, threshold):
+        """Closest name above `threshold`, for spellings that differ slightly.
+
+        Off by default. A near match is a guess, so the ratio and the name it
+        settled on are recorded and reported: a wrong genus placed silently is
+        worse than a record left unplaced.
+        """
+        # The API matches substrings, so a misspelling returns nothing at all.
+        # Probe with progressively shorter keys until some names come back, then
+        # score those against the full string.
+        probes = [name]
+        first = name.split()[0]
+        if first != name:
+            probes.append(first)
+        if len(first) > 5:
+            probes.append(first[:5])
+        found = []
+        for probe in probes:
+            found = self.get("/taxon_names", name=probe, per=50)
+            if isinstance(found, dict):
+                found = found.get("taxon_names") or found.get("data") or []
+            if found:
+                break
+        best, best_ratio = None, 0.0
+        for candidate in found or []:
+            label = candidate.get("cached") or candidate.get("name") or ""
+            ratio = difflib.SequenceMatcher(None, name.lower(),
+                                            label.lower()).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = candidate, ratio
+        if best is not None and best_ratio >= threshold:
+            return best, round(best_ratio, 3)
+        return None, round(best_ratio, 3)
+
+    def current(self, record):
+        """The name in use now, when the match is a synonym or old combination.
+
+        A published name is often not the current one -- Pandeleteius
+        subtropicus Fall, 1907 is now Scalaventer subtropicus (Fall, 1907) --
+        and the classification worth showing is the current one. The published
+        name is never touched; this is recorded beside it.
+        """
+        if record.get("cached_is_valid") is False:
+            valid_id = record.get("cached_valid_taxon_name_id")
+            if valid_id and valid_id != record.get("id"):
+                valid = self.by_id(valid_id)
+                if valid:
+                    return valid
+        return record
+
     def lineage(self, record):
         """Walk parent_id upward, returning every (rank, name) pair found.
 
@@ -233,7 +284,7 @@ OPEN_NOMENCLATURE = re.compile(
     r"(^|\s)(sp|spp|cf|aff|nr|indet|incertae|nov|near)\b\.?|[?]", re.IGNORECASE)
 
 REPORT_COLUMNS = ["status", "queried_name", "sent_to_api", "matched_via",
-                  "taxonworks_name",
+                  "taxonworks_name", "matched_name", "is_synonym", "similarity",
                   "taxonworks_rank", "taxonworks_id", "candidates",
                   "ranks_filled", "lineage", "specimens", "media_files"]
 
@@ -275,15 +326,18 @@ def write_output(path, cache, specimens):
                 continue
             row = {"coreid": coreid,
                    "queried_name": name,
-                   # A voucher for how the placement was reached, never a
-                   # replacement for the published dwc:scientificName.
-                   "taxonworks_name": entry["matched_name"],
+                   # The name in use now where it differs from the one matched,
+                   # both recorded. Neither replaces dwc:scientificName.
+                   "taxonworks_name": (entry.get("current_name")
+                                       or entry["matched_name"]),
+                   "matched_name": entry["matched_name"],
                    "taxonworks_rank": entry["matched_rank"],
                    # 'genus': the species did not match and the record was placed
                    # by its genus alone -- said plainly rather than implying a
                    # species-level identification.
                    "matched_via": entry.get("via", ""),
-                   "taxonworks_id": entry["taxonworks_id"],
+                   "taxonworks_id": entry.get("current_id")
+                                    or entry["taxonworks_id"],
                    "source": "taxonworks"}
             for column, value in ranks.items():
                 if column in FILLABLE_RANKS:
@@ -322,7 +376,8 @@ def classify(name, entry):
     if entry is None:
         return "not-queried"
     if ranks_of(entry):
-        return "matched-via-genus" if entry.get("via") == "genus" else "matched"
+        return {"genus": "matched-via-genus",
+                "fuzzy": "matched-approximately"}.get(entry.get("via"), "matched")
     if OPEN_NOMENCLATURE.search(name):
         return "open-nomenclature"
     if not normalise_name(name):
@@ -354,7 +409,11 @@ def write_report(path, cache, specimens, media_counts):
             "queried_name": name,
             "sent_to_api": (entry or {}).get("sent", normalise_name(name)),
             "matched_via": (entry or {}).get("via", ""),
-            "taxonworks_name": (entry or {}).get("matched_name", ""),
+            "similarity": (entry or {}).get("ratio", ""),
+            "taxonworks_name": ((entry or {}).get("current_name")
+                                or (entry or {}).get("matched_name", "")),
+            "matched_name": (entry or {}).get("matched_name", ""),
+            "is_synonym": "yes" if (entry or {}).get("is_synonym") else "",
             "taxonworks_rank": (entry or {}).get("matched_rank", ""),
             "taxonworks_id": (entry or {}).get("taxonworks_id", ""),
             "candidates": (entry or {}).get("candidates", ""),
@@ -364,8 +423,9 @@ def write_report(path, cache, specimens, media_counts):
             "specimens": counts["specimens"],
             "media_files": counts["media"],
         })
-    order = {"matched": 0, "matched-via-genus": 1, "absent-from-project": 2,
-             "open-nomenclature": 3, "unparsable": 4, "not-queried": 5}
+    order = {"matched": 0, "matched-via-genus": 1, "matched-approximately": 2,
+             "absent-from-project": 3, "open-nomenclature": 4, "unparsable": 5,
+             "not-queried": 6}
     rows.sort(key=lambda r: (order.get(r["status"], 9), -r["media_files"],
                              r["queried_name"]))
     with open(path, "w", newline="", encoding="utf-8") as fh:
@@ -391,6 +451,19 @@ def summarise(rows):
               f"  {media:7,} media files")
 
     matched = [r for r in rows if r["status"].startswith("matched")]
+    approximate = [r for r in rows if r["status"] == "matched-approximately"]
+    if approximate:
+        print(f"\n  {len(approximate):,} names matched only approximately -- "
+              f"check these:")
+        for row in approximate[:5]:
+            print(f"    {row['similarity']}  {row['queried_name']} -> "
+                  f"{row['taxonworks_name']}")
+    renamed = [r for r in matched if r.get("is_synonym")]
+    if renamed:
+        print(f"  {len(renamed):,} names resolved to a different current "
+              f"combination, e.g.")
+        for row in renamed[:3]:
+            print(f"    {row['matched_name']} -> {row['taxonworks_name']}")
     if matched:
         ranks = {}
         for row in matched:
@@ -511,6 +584,11 @@ def main():
                         help="attempts per request before giving up (default: 4)")
     parser.add_argument("--no-verbatim", action="store_true",
                         help="ignore occurrence_raw.csv when deciding what is missing")
+    parser.add_argument("--fuzzy", nargs="?", type=float, const=0.90,
+                        metavar="RATIO",
+                        help="when an exact match fails, accept the closest name "
+                             "at or above RATIO (default 0.90). Off unless given; "
+                             "every approximate match is reported with its score")
     parser.add_argument("--retry-misses", action="store_true",
                         help="re-query names cached as unmatched (after a "
                              "matching improvement), keeping the hits")
@@ -640,19 +718,27 @@ def main():
                         continue          # retried next run
                     via = "genus" if record else via
             if record:
+                # Classify by the name in use now, but remember what was hit.
+                accepted = api.current(record)
                 cache[name] = {
                     "sent": sent,
                     "via": via,
+                    "ratio": ratio,
                     "candidates": candidates,
                     "matched_name": record.get("cached") or record.get("name") or "",
                     "matched_rank": (record.get("rank_string") or "")
                                     .rsplit("::", 1)[-1],
                     "taxonworks_id": record.get("id"),
-                    "lineage_raw": api.lineage(record),
+                    "current_name": (accepted.get("cached")
+                                     or accepted.get("name") or ""),
+                    "current_id": accepted.get("id"),
+                    "is_synonym": accepted.get("id") != record.get("id"),
+                    "lineage_raw": api.lineage(accepted),
                 }
                 resolved += 1
             else:
-                cache[name] = {"sent": sent, "via": "", "candidates": candidates,
+                cache[name] = {"sent": sent, "via": "", "ratio": ratio,
+                               "candidates": candidates,
                                "matched_name": "", "matched_rank": "",
                                "taxonworks_id": "", "lineage_raw": []}
             if index % 25 == 0 or index == len(names):
