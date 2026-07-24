@@ -1,266 +1,275 @@
-# iDigBio type specimen media backup
+# idigbio-media-backup
 
-Downloads the media files of an iDigBio Darwin Core Archive, restricted to
-occurrences whose `dwc:typeStatus` is not empty, and builds a local HTML gallery
-for browsing them.
+Download the media files referenced by an [iDigBio](https://www.idigbio.org)
+Darwin Core Archive, browse them in a self-contained HTML gallery, and
+optionally resolve their classification against the
+[TaxonWorks](https://taxonworks.org) API.
+
+Three scripts, no dependencies beyond `requests`. They work on any iDigBio
+DwC-A — nothing is specific to a taxonomic group.
+
+```bash
+cd my-dataset                    # a directory containing dwca/
+python3 ../download_media.py     # asks: type specimens only, or all media?
+python3 ../make_gallery.py --open
+```
+
+## Requirements
+
+Python 3.9+ and `requests` (`pip install requests`). A browser to view the
+gallery; no server needed.
+
+## Getting an archive
+
+Search [iDigBio's portal](https://www.idigbio.org/portal/search), request a
+download, and unpack the resulting zip into a directory named `dwca/`. The files
+that matter:
+
+| file | role |
+|------|------|
+| `occurrence.csv`     | indexed occurrence fields — `dwc:typeStatus` is read here |
+| `occurrence_raw.csv` | verbatim publisher values — often better ranks, see below |
+| `multimedia.csv`     | indexed media records — `ac:accessURI` is read here |
+| `multimedia_raw.csv` | verbatim media values |
+
+Note there is **no core file**: `occurrence.csv` and `multimedia.csv` are both
+DwC-A *extensions*, joined on `coreid`, the iDigBio occurrence UUID.
 
 ## Layout
 
-The three scripts are the whole of the source; every dataset is an untracked
-working directory beside them. A dataset is any directory containing a `dwca/`,
-so several downloads coexist without duplicating the code.
+The scripts are the whole of the source; each dataset is an untracked working
+directory. A dataset is any directory containing a `dwca/`, so several downloads
+coexist without duplicating code.
 
 ```
-iDigBio_Backup/            git repo -- only the scripts and this file
+.
 ├── download_media.py
 ├── make_gallery.py
 ├── fill_taxonomy.py
-├── dwca/                  a dataset can sit at the root ...
+├── dwca/                  a dataset can sit at the repo root ...
 ├── media/                     downloaded files + manifest.csv + download_log.csv
 ├── gallery/                   gallery.html, references ../media/
 ├── taxonomy/                  taxonworks.csv + resumable API cache
-└── chrysomelidae/         ... or in its own directory
+└── some-other-dataset/    ... or in its own directory
     ├── dwca/
     └── media/  gallery/  taxonomy/
 ```
 
-Inside `dwca/`, the files that matter:
-
-| file | role |
-|------|------|
-| `occurrence.csv`     | indexed occurrence fields — `dwc:typeStatus` read here |
-| `occurrence_raw.csv` | verbatim publisher values — better ranks, see below |
-| `multimedia.csv`     | indexed media records — `ac:accessURI` read here |
-| `multimedia_raw.csv` | verbatim media values |
-
-## Usage
-
-```bash
-cd chrysomelidae                       # or stay at the root, if dwca/ is there
-python3 ../download_media.py           # asks: type specimens only, or all?
-python3 ../download_media.py --scope all
-python3 ../fill_taxonomy.py            # optional, see TaxonWorks below
-python3 ../make_gallery.py --open
-```
-
-Each script works on the dataset in the current directory — strictly, the
+Each script operates on the dataset in the current directory — strictly, the
 nearest directory holding a `dwca/`, falling back to where the scripts live.
-`--root` picks a different one; `--archive`, `--media`, `--out` override
+`--root` selects a different one; `--archive`, `--media`, `--out` override
 individually.
 
-Run without `--scope` and the download asks at the prompt; when it is not
-attached to a terminal (cron, a pipe) it takes `types` rather than blocking on a
-question nobody can answer.
+## Downloading
 
-It is safe to run `--scope types` first and `--scope all` later: resume matches
-on media UUID, so the type files are recognised and skipped rather than
-re-fetched. Note that `manifest.csv` is a snapshot rewritten each run, so the
-second run's manifest supersedes the first; `download_log.csv` is append-only
-and keeps the full history.
+```bash
+python3 ../download_media.py                # prompts for scope
+python3 ../download_media.py --scope types  # only occurrences with a typeStatus
+python3 ../download_media.py --scope all    # every media record
+```
 
-Useful flags: `--limit N` (small trial), `--workers N` (default 8), `--dry-run`,
-`--timeout`, `--retries`. `make_gallery.py --strict` refuses to build when files
-in `media/` cannot be matched to the archive, instead of warning.
+Without `--scope` you are asked at the prompt; when not attached to a terminal
+(cron, a pipe) it takes `types` rather than blocking on a question nobody can
+answer.
 
-## How records are selected
+Running `--scope types` first and `--scope all` later is safe: resume matches on
+media UUID, so the type files are recognised and skipped. `manifest.csv` is a
+snapshot rewritten each run, so the second supersedes the first;
+`download_log.csv` is append-only and keeps the full history.
 
-`occurrence.csv` and `multimedia.csv` are both DwC-A *extensions* — there is no
-core file — and are joined on `coreid`, the iDigBio occurrence UUID.
+Other flags: `--limit N` (small trial), `--workers N` (default 8), `--dry-run`,
+`--timeout`, `--retries`.
 
-In the Chrysomelidae download used for the figures below, of 509,084 occurrences, 27,931 carry a non-empty `dwc:typeStatus`; 4,109 of those
-have media attached, giving **14,716 media records** (a specimen averages ~3.6
-views: habitus, labels, barcode).
+### File naming and resume
 
-`dwc:typeStatus` is free text with 4,208 distinct values, so the manifest
-classifies each record in a `type_category` column:
+Files are named `<catalogNumber>__<media-uuid>.<ext>`, with the UUID **last** so
+the prefix can change without breaking anything. Records with no catalogue
+number fall back to `occ-<first 8 of coreid>__<media-uuid>`, so a specimen's
+several views still sort together.
 
-| category   | meaning                                                        | media |
-|------------|----------------------------------------------------------------|-------|
-| `type`     | holotype, paratype, syntype, lectotype, tipo, typus, …          | 14,576 |
-| `citation` | Arctos publication vouchers — `voucher of <taxon> in <pub>`      | 83    |
-| `negative` | explicit denials: `no aplica`, `none`, `non-type`, `\|null\|`    | 45    |
-| `other`    | unclear: `possibletype`, `original`, `figuré` — review these     | 12    |
+A re-run lists the media folder, extracts the UUID from each filename, and skips
+those records. **The filesystem is the index** — the manifest and log can be
+deleted without affecting resume. Downloads write to `<name>.part` and are
+renamed only once the body is complete, so a partial file is never mistaken for
+a finished one. Ctrl-C is safe: in-flight downloads finish and the manifest is
+still written.
 
-All four are downloaded; the column exists so they can be separated afterwards.
-Arctos citations are parsed into `citation_roles`, `cited_taxa`, `publications`
-and `cited_pages`. Every segment of a citation chain is read, so a type buried at
-the end of one is still classified as `type` (e.g. NMMNHS *Acanthodes kinneyi*,
-`holotype of … in zidek (1992)` after four other citations).
+`coreid` is what links an image to a specimen. `multimedia.csv` carries *only*
+`coreid` — the catalogue number lives on the occurrence side and reaches media
+through the join. Catalogue numbers are only unique within an institution, so
+they order the gallery for readability but never decide what belongs together.
 
-## Resume and file naming
+### Failures
 
-Files are named `<catalogNumber>__<media-uuid>.<ext>`, UUID last so the prefix can
-change without breaking resume. The 1,559 records with no catalogue number fall
-back to `occ-<first 8 of coreid>__<media-uuid>`, so a specimen's several views
-still sort together — a bare UUID would scatter them. Zero collisions across all
-14,716 names. Downloads write to `<name>.part` and are renamed only once the body
-is complete.
+Not everything is fetchable, and the reasons are worth knowing:
 
-A re-run lists `media/`, extracts the UUID from each filename and skips those
-records — the filesystem is the index, so the manifest and log can be deleted
-without affecting resume. `.part` files are never counted as complete. Ctrl-C is
-safe: in-flight downloads finish and the manifest is still written.
+- **Provider bot protection.** Some institutions serve media from behind
+  Cloudflare, which answers `403` with a challenge page. This is an access
+  control, not a rate limit — no header changes get around it. Ask the
+  institution for API/bulk access, or fetch those specimens via GBIF.
+- **Dead hosts.** Some URLs point at servers that no longer answer.
+- **Malformed `ac:accessURI`.** A few records publish a local staging path
+  (`/mnt/…`) instead of a URL; these are skipped up front as `invalid-url`.
 
-## Expected failures (~1,390, roughly 9.5%)
+HTTP 4xx is not retried (except 408/429) — a refusal will not become a success
+on the second attempt. 5xx and network errors retry with backoff. After
+`DEAD_HOST_STRIKES` (5) consecutive *connection* failures a host is written off
+for the rest of the run and its remaining files fail instantly, which avoids
+spending 3 × the connect timeout on every one of them; they are logged normally
+and retried next run.
 
-| host / cause                  | files | detail                                  |
-|-------------------------------|-------|-----------------------------------------|
-| `mediaphoto.mnhn.fr`          | 1,236 | HTTP 403, Cloudflare bot challenge       |
-| `arctos.database.museum`      | 84    | connect timeout                          |
-| `digitalgallery.nhm.org:8085` | 58    | connect timeout                          |
-| malformed `ac:accessURI`      | 15    | `/mnt/target-images/…` staging paths     |
-
-The MNHN block is an access control, not a rate limit — a header change does not
-get around it, and neither does iDigBio's own cache (`api.idigbio.org/v2/media/
-<etag>` returns 404 for all of these, i.e. iDigBio could not fetch them either).
-The legitimate routes are an MNHN data request or the same specimens via GBIF.
-
-HTTP 4xx responses are not retried (except 408/429), since a refusal will not
-become a success on the second attempt; 5xx and network errors retry with
-backoff.
-
-An unreachable host costs 3 attempts x the 60 s connect timeout *per file*, and
-142 files sit behind two such hosts — about 55 minutes of waiting. After
-`DEAD_HOST_STRIKES` (5) consecutive connection failures a host is written off for
-the rest of the run and its remaining files fail instantly; they are logged
-normally and retried next run. A 403 or 404 does not count, since those prove the
-host is up and answering.
-
-### Linking images to specimens
-
-`multimedia.csv` carries **only `coreid`** — no catalogue number. (`multimedia_raw.csv`
-has a `dwc:catalogNumber` column, but it is empty for all 14,716 rows.) So the
-occurrence UUID is the sole link between an image and its specimen, and the
-gallery groups on it. Catalogue numbers merely order the grid for readability:
-they are unique per specimen in *this* archive (0 collisions across 3,758) but
-are only guaranteed unique within an institution.
+Progress is reported from the rate of *successful* transfers, since a burst of
+instant refusals otherwise makes the estimate meaningless.
 
 ## Gallery
 
-`make_gallery.py` reads the archive plus whatever is in `media/` — it can be run
-mid-download. `gallery.html` embeds its metadata inline (no server, no network),
-lazy-loads thumbnails in pages of 120, and supports search over catalogue number,
-taxon, typeStatus, institution and publication, plus category/institution
-filters. Clicking an image opens it full size with its metadata and lineage, a
-link to the iDigBio record and to the original media URL; arrow keys step through
-results.
+`make_gallery.py` reads the archive plus whatever is in `media/`, so it can be
+run mid-download. It writes a single self-contained `gallery.html`: metadata is
+embedded inline as JSON, images are referenced as `../media/<file>`, and nothing
+is fetched at runtime — a `file://` page cannot read a local CSV, and this way
+there is no server to run. It is a snapshot; re-run it after downloading more.
 
-### Taxonomic tree
+Thumbnails lazy-load in pages of 120. Search covers catalogue number, taxon,
+typeStatus, institution and publication. Clicking an image opens it full size
+with its metadata and lineage, plus links to the iDigBio record and the original
+media URL; arrow keys step through results.
 
-The sidebar is a rank-nested tree with per-node counts; selecting a node filters
-the grid, and it re-counts as the search and dropdown filters change. Records
-missing a rank sit under an explicit *unplaced (rank)* node rather than being
-dropped, so the counts stay honest. Levels that do not branch are opened
-automatically (this archive is entirely Chrysomelidae, so it lands on the genus
-list), and a rank nothing populates is left out of the tree entirely.
+If files in the media folder match no record in the archive — usually another
+dataset's download sharing the folder — you get a warning naming examples.
+`--strict` fails instead of building a gallery that silently omits them.
 
-Rank coverage in this archive, across the 14,716 type media records:
+### Trees
 
-| rank            | coverage | source                                          |
-|-----------------|---------:|-------------------------------------------------|
-| kingdom         |   99.5%  | `occurrence.csv`                                 |
-| phylum … family |    100%  | `occurrence.csv`                                 |
-| tribe           |     0.6% | **not a column** — recovered from `dwc:higherClassification` |
-| genus           |    99.8% | `occurrence.csv`, gaps filled from `occurrence_raw.csv` |
-| subgenus        |     5.0% | `occurrence_raw.csv` only                        |
-| specificEpithet |    95.3% | 54.6% indexed, raised by `occurrence_raw.csv` (see below) |
+The sidebar holds a taxonomy tree (kingdom → … → species) and a geography tree
+(continent → country → stateProvince), each with per-node counts, a type-ahead
+filter and its own selection. Counts respond to the search box and the other
+tree, but not to a tree's own selection, so sibling counts stay meaningful.
+Selections appear as removable chips.
 
-`dwc:tribe` exists in `occurrence_raw.csv` but is empty for every record here, so
-tribes are parsed out of `dwc:higherClassification` instead — an unranked
-lineage, where the rank has to be inferred from the name ending (`-ini`
-zoological, `-eae` botanical, excluding `-aceae`/`-oideae`). That yields 84
-records across 6 tribes; the rest stay unplaced.
+Records missing a level sit under an explicit *unplaced (rank)* node rather than
+being dropped, so counts stay honest. Levels that do not branch are opened
+automatically, and a rank nothing populates is left out entirely — `dwc:tribe`
+reappears by itself once something fills it.
+
+## Classification
 
 ### Verbatim vs indexed ranks
 
 iDigBio's `occurrence.csv` carries its *matched* classification. Where it
 rewrites a name to a senior synonym but cannot place the species under it, it
-keeps the accepted genus and drops the epithet:
+keeps the accepted genus and drops the epithet. A real example, *Hadropoda
+xanthoura* (*Hadropoda* being a synonym of *Aedmon*):
 
 | field           | `occurrence_raw.csv` (publisher) | `occurrence.csv` (iDigBio) |
 |-----------------|----------------------------------|----------------------------|
-| genus           | `Hadropoda`                      | `aedmon` (senior synonym)   |
+| genus           | `Hadropoda`                      | `aedmon`                    |
 | scientificName  | `Hadropoda xanthoura`            | `hadropoda`                 |
 | specificEpithet | `xanthoura`                      | *(empty)*                   |
 
-That is why the tree shows *Hadropoda* specimens under **aedmon → unplaced**:
-the archive says so. Reading the verbatim file back in raises species coverage
-from **54.6% to 95.3%** and recovers `subgenus` (5%), so `make_gallery.py` does
-it by default; `--no-verbatim` skips it and saves a ~574 MB read.
+Such records appear in the tree under the accepted genus → *unplaced*. Reading
+the verbatim file back in recovers the epithet — in one Chrysomelidae download
+that raised species coverage from 54.6% to 95.3%, and recovered `subgenus`. The
+gallery does this by default; `--no-verbatim` skips it and avoids a large read.
 
-Note this affects metadata only — the set of media records to download is
-identical either way, since selection depends solely on `dwc:typeStatus`.
-`manifest.csv` is still written from the indexed values.
+This affects metadata only. Which media get downloaded depends solely on
+`dwc:typeStatus`.
+
+`dwc:tribe` is absent from `occurrence.csv` altogether. Where
+`dwc:higherClassification` carries one it is recovered by name ending (`-ini`
+zoological, `-eae` botanical, excluding `-aceae`/`-oideae`), but that field is
+sparse; tribes generally need an external source.
 
 ### Filling ranks from an external source
 
-Ranks the publisher left empty — `specificEpithet` for 45% of records, `tribe`
-for nearly all — are meant to be fillable from a name-parsing service or the GBIF
-backbone. `make_gallery.py --taxonomy names.csv` merges such a file in without
+`make_gallery.py --taxonomy names.csv` merges externally resolved ranks without
 touching the archive:
 
 ```csv
-scientificName,tribe,specificEpithet
-chrysomela falsa,Chrysomelini,falsa
+coreid,family,genus,tribe
+6f1e…,Familyidae,Genus,Tribeini
 ```
 
 Matched on `coreid` when that column is present, otherwise on `scientificName`
 (case-insensitive); any subset of rank columns is accepted, with or without the
-`dwc:` prefix. By default it only fills what the archive left empty —
+`dwc:` prefix. By default it fills only what the archive left empty —
 `--taxonomy-authoritative` lets it overwrite. Each record keeps its provenance
-(`archive` / `mixed` / `external`), shown in the image detail panel, so an
-inferred classification is never mistaken for a published one. A rank supplied
-this way appears in the tree automatically.
+(`archive` / `mixed` / `external`), shown in the detail panel, so an inferred
+classification is never mistaken for a published one.
 
 ### fill_taxonomy.py — TaxonWorks
 
 Resolves names against the [TaxonWorks API](https://api.taxonworks.org) and
-writes `taxonomy/taxonworks.csv` in exactly the `--taxonomy` format above. The
-archive is opened read-only; nothing in `dwca/` is ever modified.
+writes `taxonomy/taxonworks.csv` in exactly that format. The archive is opened
+read-only.
 
-TaxonWorks is not limited to any one group — it is a general nomenclatural
-workbench covering all taxonomic groups (animals, plants, fungi, bacteria; ICZN,
-ICN, ICNP), so this works for any DwC-A, not just insects. What it *can* answer
-is bounded by the project the token belongs to, not by taxon.
+TaxonWorks is a general nomenclatural workbench covering all taxonomic groups
+and all the codes (ICZN, ICN, ICNP), so this is not limited to any one group.
+What it can answer is bounded by the *project* a token belongs to, not by taxon.
 
 ```bash
-python3 ../fill_taxonomy.py --missing-only     # prompts for the token
+python3 ../fill_taxonomy.py --missing-only    # prompts for the token
 python3 ../make_gallery.py --taxonomy taxonomy/taxonworks.csv
 ```
 
-**The token is never stored.** It is not written into the scripts, not read from
-an environment variable by default, and not saved to disk — you are prompted for
-it at the start of each run (`getpass`, so it does not echo or land in shell
-history). `--project-token` exists for automation if you want it.
+**The token is never stored.** Not in the scripts, not read from the environment
+by default, not written to disk — you are prompted at the start of each run
+(`getpass`, so it does not echo or reach shell history). `--project-token`
+exists for automation. A project token is not secret in TaxonWorks' model; it
+marks a project's data as public. Create one in your project's preferences.
 
-What it may and may not change: it fills only ranks **above** the species
-epithet. `dwc:scientificName` and `dwc:specificEpithet` are always left exactly
-as published — an external database supplies the scaffold above a name, it does
-not rename a specimen. The name TaxonWorks matched is recorded separately in a
-`taxonworks_name` column, shown in the gallery's detail panel as a voucher for
-how the placement was reached and included in the search index.
+It fills only ranks **above** the species epithet. `dwc:scientificName` and
+`dwc:specificEpithet` are left exactly as published — an external database
+supplies the scaffold above a name, it does not rename a specimen. The matched
+name is recorded separately as `taxonworks_name`, shown in the gallery as a
+voucher for how the placement was reached and included in the search index.
 
-Output is keyed on **`coreid`**, never on the name. Keying on
-`dwc:scientificName` would be wrong: iDigBio shortens it to the bare genus
-whenever it cannot match the species, so in the Chrysomelidae download a single
-`diabrotica` string covered 98 distinct taxa across 5,634 media records — one
-lookup would have stamped the same lineage onto all of them. The name actually
-queried is the publisher's verbatim one where available (far less ambiguous:
-2,782 distinct, 10 ambiguous), else a genus/epithet pair, else the indexed name.
+Output is keyed on **`coreid`**, never on the name, because the indexed
+`scientificName` is not a reliable key: shortened to the bare genus, one string
+can stand for dozens of distinct species, and a name-keyed lookup would stamp a
+single lineage onto all of them. The name queried is the publisher's verbatim
+one where available, else a genus/epithet pair, else the indexed name.
 
-* base `https://sfg.taxonworks.org/api/v1` (`--base-url` for the sandbox)
-* every call needs `project_token`, or `token` + `project_id`, as query
-  parameters. A project token is **not secret** — it marks a project's data as
-  public — but it is per project, so results only cover that project's names.
-  Create one in your TaxonWorks project preferences.
-* `GET /taxon_names?name=&name_exact=` to search, then `parent_id` is walked
-  upward through `GET /taxon_names/{id}`; `rank_string`
-  (`NomenclaturalRank::Iczn::GenusGroup::Genus`) gives each ancestor's rank.
-* responses are cached in `taxonomy/taxonworks_cache.json`, so an interrupted
-  run resumes instead of re-querying. `--list-only` shows the work without
-  touching the network; `--missing-only` restricts to the 2,124 names that still
-  lack a tribe or epithet after the archive is exhausted.
+Responses are cached in `taxonomy/taxonworks_cache.json`, so an interrupted run
+resumes. `--list-only` shows the work without touching the network;
+`--missing-only` restricts to names still lacking a rank.
 
-**Verified so far:** name selection, caching, CSV output, the missing-token
-guard and the live 401 response. The resolution path itself has *not* been run
-against real data — that needs a project token, which is yours to supply.
+> **Status:** name selection, caching, CSV output and the auth failure path are
+> tested; the resolution path itself has not been exercised against a live
+> project token. Treat the TaxonWorks integration as unproven until you have.
+
+## How type records are selected
+
+`--scope types` keeps occurrences whose `dwc:typeStatus` is not empty. That
+field is free text and, in practice, messy — one download contained 4,208
+distinct values. The manifest therefore classifies each record in a
+`type_category` column:
+
+| category   | meaning |
+|------------|---------|
+| `type`     | holotype, paratype, syntype, lectotype, tipo, typus, … |
+| `citation` | Arctos publication vouchers — `voucher of <taxon> in <publication>` |
+| `negative` | explicit denials: `no aplica`, `none`, `non-type`, `\|null\|` |
+| `other`    | unclear: `possibletype`, `original`, `figuré` — worth reviewing |
+
+All are downloaded; the column exists so they can be separated afterwards.
+
+Some publishers (Arctos) use this field for specimen citations rather than
+nomenclatural status. Those are parsed into `citation_roles`, `cited_taxa`,
+`publications` and `cited_pages`. Every segment of a citation chain is
+inspected, because a genuine type designation can hide at the end of one — for
+example a record listing four ordinary citations followed by
+`holotype of … in zidek (1992)`.
+
+## Output files
+
+| file | |
+|------|--|
+| `media/<name>.<ext>`      | the media files |
+| `media/manifest.csv`      | every record considered, rewritten each run: status, filename, URL, coreid, taxonomy, geography, type category, citation fields |
+| `media/download_log.csv`  | append-only, one row per attempt, flushed immediately; survives interruption and accumulates across runs |
+| `gallery/gallery.html`    | the browsable gallery |
+| `taxonomy/taxonworks.csv` | external classification, if resolved |
+
+## Licence
+
+None specified yet — add one before reusing.
