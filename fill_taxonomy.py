@@ -125,7 +125,7 @@ FILLABLE_RANKS = [r for r in dl.TAXON_RANKS
 # iDigBio shortens dwc:scientificName to the genus whenever it cannot match the
 # species, so 'diabrotica' alone covers 98 distinct taxa across 5,634 records.
 OUT_COLUMNS = (["coreid", "queried_name", "taxonworks_name", "matched_name",
-                "taxonworks_rank", "matched_via", "taxonworks_id"]
+                "taxonworks_rank", "matched_via", "similarity", "taxonworks_id"]
                + [c.split(":", 1)[1] for c in FILLABLE_RANKS] + ["source"])
 
 
@@ -222,16 +222,29 @@ class TaxonWorks:
                 found = found.get("taxon_names") or found.get("data") or []
             if found:
                 break
-        best, best_ratio = None, 0.0
+        # Only names in the same genus are considered. Congeneric epithets sit
+        # very close together -- 'Conotrachelus carinatus' and 'C. ecarinatus'
+        # score 0.979, 'aratus' and 'armatus' 0.976, and 609 such pairs exist in
+        # one archive at 0.90 -- so a near match within a genus is a coin toss
+        # between siblings. It costs nothing here: only ranks above the epithet
+        # are ever written, and siblings share all of them. A match in the wrong
+        # genus would corrupt every rank, so it is refused however close.
+        wanted_genus = name.split()[0].lower()
+        best, best_ratio, rejected = None, 0.0, 0.0
         for candidate in found or []:
             label = candidate.get("cached") or candidate.get("name") or ""
+            if not label:
+                continue
             ratio = difflib.SequenceMatcher(None, name.lower(),
                                             label.lower()).ratio()
+            if label.split()[0].lower() != wanted_genus:
+                rejected = max(rejected, ratio)
+                continue
             if ratio > best_ratio:
                 best, best_ratio = candidate, ratio
         if best is not None and best_ratio >= threshold:
             return best, round(best_ratio, 3)
-        return None, round(best_ratio, 3)
+        return None, round(max(best_ratio, rejected), 3)
 
     def current(self, record):
         """The name in use now, when the match is a synonym or old combination.
@@ -336,6 +349,7 @@ def write_output(path, cache, specimens):
                    # by its genus alone -- said plainly rather than implying a
                    # species-level identification.
                    "matched_via": entry.get("via", ""),
+                   "similarity": entry.get("ratio", ""),
                    "taxonworks_id": entry.get("current_id")
                                     or entry["taxonworks_id"],
                    "source": "taxonworks"}

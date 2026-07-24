@@ -165,6 +165,7 @@ def load_taxonomy(path):
         matched_column = (columns.get("taxonworks_name")
                           or columns.get("matched_name"))
         via_column = columns.get("matched_via")
+        score_column = columns.get("similarity")
         for row in reader:
             values = {rank: (row.get(src) or "").strip()
                       for rank, src in rank_columns.items()}
@@ -173,8 +174,17 @@ def load_taxonomy(path):
                 continue
             if matched_column and (row.get(matched_column) or "").strip():
                 name = row[matched_column].strip()
-                if via_column and (row.get(via_column) or "").strip() == "genus":
+                via = (row.get(via_column) or "").strip() if via_column else ""
+                if via == "genus":
                     name += "  (placed by genus)"
+                elif via == "fuzzy":
+                    # An approximate match may well be the wrong species: it is
+                    # only allowed to keep the genus. Say so where it is read,
+                    # not merely in the report.
+                    score = (row.get(score_column) or "").strip() \
+                        if score_column else ""
+                    name += f"  (closest name{', ' + score if score else ''} —"
+                    name += " species uncertain)"
                 values[TW_NAME] = name
             if key_column and (row.get(key_column) or "").strip():
                 table["coreid"][row[key_column].strip()] = values
