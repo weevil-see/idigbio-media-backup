@@ -878,12 +878,16 @@ def main():
                                      or accepted.get("name") or ""),
                     "current_id": accepted.get("id"),
                     "is_synonym": accepted.get("id") != record.get("id"),
+                    # Written out rather than left to be inferred from the key
+                    # being missing: provenance should survive a cache read by
+                    # anything that was not this script.
+                    "source": "taxonworks",
                     "lineage_raw": api.lineage(accepted),
                 }
                 resolved += 1
             else:
                 cache[name] = {"sent": sent, "via": "", "ratio": ratio,
-                               "candidates": candidates,
+                               "source": "", "candidates": candidates,
                                "matched_name": "", "matched_rank": "",
                                "taxonworks_id": "", "lineage_raw": []}
             if index % 25 == 0 or index == len(names):
