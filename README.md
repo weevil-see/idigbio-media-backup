@@ -272,8 +272,12 @@ requires attribution and the archive does not say whom to credit, the honest
 course is to ask the provider rather than guess — the panel says so instead of
 showing a blank field.
 
-The detail panel shows them and offers **copy attribution**, which puts one line
-on the clipboard:
+The panel shows two rows, the two roles TaxonWorks would have you fill —
+**Creator** and **Copyright holder** — each saying *not stated* when the archive
+is silent. The provider appears only inside the holder row, and only when there
+is no holder, as somewhere to ask: naming it as the holder would assert a right
+the archive does not record. **Copy attribution** puts one line on the
+clipboard:
 
 ```
 Jens Prena / Smithsonian Institution, NMNH, Entomology

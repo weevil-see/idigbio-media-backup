@@ -519,6 +519,7 @@ PAGE = """<!doctype html>
     letter-spacing: 0.04em; margin-top: 12px; }
   .info dd { margin: 2px 0 0; word-break: break-word; }
   .info a { color: var(--accent); }
+  .unstated { color: var(--muted); font-style: italic; }
   .lineage { font-size: 13px; line-height: 1.7; }
   .lineage span { color: var(--muted); }
   .close { position: absolute; top: 8px; right: 13px; background: none;
@@ -941,15 +942,19 @@ function show(rowIndex) {
         ? `<a href="${esc(r.licence_url)}" target="_blank">${esc(r.licence)}</a>`
         : esc(r.licence)}${r.terms && r.terms !== r.licence
           ? `<br><span class="ext">${esc(r.terms)}</span>` : ""}</dd>
-      ${r.creator ? `<dt>Creator</dt><dd>${esc(r.creator)}</dd>` : ""}
-      ${r.holder ? `<dt>Copyright holder</dt><dd>${esc(r.holder)}</dd>` : ""}
-      ${r.provider ? `<dt>Provider</dt><dd>${esc(r.provider)}
-        <span class="ext">· served the record; not an attribution</span></dd>` : ""}
+      <dt>Creator</dt><dd>${r.creator ? esc(r.creator)
+        : `<span class="unstated">not stated</span>`}</dd>
+      <dt>Copyright holder</dt><dd>${r.holder ? esc(r.holder)
+        : `<span class="unstated">not stated</span>`}${
+        // The provider only ever appears here, as somewhere to ask. Naming it
+        // as the holder would assert a right the archive does not record.
+        !r.holder && r.provider
+          ? `<br><span class="ext">the record came from ${esc(r.provider)} —
+             ask them who holds it</span>` : ""}</dd>
       ${r.creator || r.holder
         ? `<dd><button id="vcite" class="reveal-btn">copy attribution</button></dd>`
-        : `<dd class="warn">No creator or copyright holder stated. A licence
-           says what may be done, not whom to credit — ask the provider before
-           reusing this.</dd>`}
+        : `<dd class="warn">A licence says what may be done, not whom to credit.
+           This one names nobody, so it cannot be attributed as it stands.</dd>`}
       <dt>Classification <span class="ext">${
         r.source === "archive" ? "" : "· " + esc(r.source)}</span></dt>
       <dd class="lineage">${lineage || "—"}</dd>
