@@ -77,7 +77,7 @@ TREES = [
 FIELDS = ["file", "catalog", "name", "status", "category", "institution",
           "coreid", "url", "publication", "levels", "source", "matched",
           "licence", "licence_url", "pending", "title_check",
-          "holder", "creator", "terms"]
+          "holder", "creator", "provider", "terms"]
 
 
 # iDigBio lower-cases everything it indexes, so the archive yields 'animalia',
@@ -356,6 +356,7 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim,
             item.get("title_check", ""),
             item.get("rights_holder", ""),
             item.get("creator", ""),
+            item.get("provider", ""),
             item.get("usage_terms", ""),
         ])
     # Group a specimen's several views together. coreid (the occurrence UUID) is
@@ -571,7 +572,7 @@ const rows = DATA.map(a => {
   FIELDS.forEach((f, i) => o[f] = a[i]);
   o.paths = o.levels.map(ix => ix.map(i => i < 0 ? "" : VOCAB[i]));
   o._hay = [o.catalog, o.name, o.status, o.institution, o.publication, o.matched,
-            o.licence, o.holder, o.creator,
+            o.licence, o.holder, o.creator, o.provider,
             o.title_check ? "title-mismatch " + o.title_check : "",
             ...o.paths.flat()].join(" ").toLowerCase();
   return o;
@@ -940,12 +941,15 @@ function show(rowIndex) {
         ? `<a href="${esc(r.licence_url)}" target="_blank">${esc(r.licence)}</a>`
         : esc(r.licence)}${r.terms && r.terms !== r.licence
           ? `<br><span class="ext">${esc(r.terms)}</span>` : ""}</dd>
-      ${r.holder || r.creator ? `<dt>Credit</dt><dd>
-        ${r.creator ? esc(r.creator) : ""}${r.creator && r.holder ? " · " : ""}
-        ${r.holder ? esc(r.holder) : ""}
-        <button id="vcite" class="reveal-btn">copy attribution</button></dd>`
-        : `<dt>Credit</dt><dd class="warn">No rights holder or creator stated —
-           a licence alone does not say whom to attribute.</dd>`}
+      ${r.creator ? `<dt>Creator</dt><dd>${esc(r.creator)}</dd>` : ""}
+      ${r.holder ? `<dt>Copyright holder</dt><dd>${esc(r.holder)}</dd>` : ""}
+      ${r.provider ? `<dt>Provider</dt><dd>${esc(r.provider)}
+        <span class="ext">· served the record; not an attribution</span></dd>` : ""}
+      ${r.creator || r.holder
+        ? `<dd><button id="vcite" class="reveal-btn">copy attribution</button></dd>`
+        : `<dd class="warn">No creator or copyright holder stated. A licence
+           says what may be done, not whom to credit — ask the provider before
+           reusing this.</dd>`}
       <dt>Classification <span class="ext">${
         r.source === "archive" ? "" : "· " + esc(r.source)}</span></dt>
       <dd class="lineage">${lineage || "—"}</dd>
@@ -992,9 +996,11 @@ function show(rowIndex) {
   // rights it is under, the terms, and where it came from.
   const cite = document.getElementById("vcite");
   if (cite) {
+    // Creator then copyright holder: the photographer and the party whose
+    // permission the licence is. The provider is deliberately left out.
     const parts = [];
     if (r.creator) parts.push(r.creator);
-    if (r.holder && r.holder !== r.creator) parts.push(r.holder);
+    if (r.holder && r.holder !== r.creator) parts.push("© " + r.holder);
     const line = parts.join(" / ") +
       (r.licence && r.licence !== "(none stated)" ? ". " + r.licence : "") +
       (r.terms && r.terms !== r.licence ? " (" + r.terms + ")" : "") +

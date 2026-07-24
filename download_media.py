@@ -339,11 +339,17 @@ def load_verbatim_ranks(archive_dir, wanted):
 DIGIT_RUN = re.compile(r"\d{5,}")
 
 
-# Who to credit, in order of how specific the statement is. A rights holder is
-# the party whose permission the licence expresses; a creator is the person who
-# made the image. TaxonWorks wants both, and a licence alone is not enough.
-HOLDER_FIELDS = ["dcterms:rightsHolder", "xmpRights:Owner", "ac:providerLiteral"]
+# Attribution roles, kept apart because they answer different questions and
+# TaxonWorks records them separately:
+#   creator          who made the image (the photographer)
+#   copyright holder whose rights the licence expresses -- the party licensing it
+#   provider         who served the record, which is neither of the above
+# Merging the provider into the holder would put "Smithsonian Institution, NMNH,
+# Entomology" where a copyright holder is expected on the strength of it having
+# published the data, which it does not establish.
+HOLDER_FIELDS = ["dcterms:rightsHolder", "xmpRights:Owner"]
 CREATOR_FIELDS = ["dc:creator", "dcterms:creator", "photoshop:Credit"]
+PROVIDER_FIELDS = ["ac:providerLiteral", "ac:provider"]
 TERMS_FIELDS = ["dcterms:license", "xmpRights:UsageTerms"]
 
 
@@ -373,6 +379,7 @@ def load_media_credits(archive_dir, wanted):
             credit = {
                 "rights_holder": first_of(row, HOLDER_FIELDS),
                 "creator": first_of(row, CREATOR_FIELDS),
+                "provider": first_of(row, PROVIDER_FIELDS),
                 "usage_terms": first_of(row, TERMS_FIELDS),
             }
             if not any(credit.values()):
@@ -462,7 +469,7 @@ def gather(archive_dir, scope=SCOPE_TYPES, verbatim=False):
                                          titles.get(row["coreid"]))
         credit = credit_by_url.get(row["url"]) or credit_by_core.get(row["coreid"])
         row.update(credit or {"rights_holder": "", "creator": "",
-                              "usage_terms": ""})
+                              "provider": "", "usage_terms": ""})
         if not has_type:
             row["type_category"] = "no-typestatus"
         items.append(row)
@@ -843,7 +850,8 @@ def main():
     manifest = os.path.join(out_dir, "manifest.csv")
     columns = (["status", "filename", "url", "coreid", "media_uuid", "media_type",
                 "format", "rights", "rights_url", "usage_terms",
-                "rights_holder", "creator", "type_category", "title_check"]
+                "rights_holder", "creator", "provider", "type_category",
+                "title_check"]
                + OCCURRENCE_CONTEXT
                + ["citation_roles", "cited_taxa", "publications", "cited_pages",
                   "detail"])

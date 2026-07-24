@@ -251,16 +251,26 @@ photographer as well, and those live in the verbatim media file under several
 different terms depending on the publisher. The first one present is taken, most
 specific first:
 
-| | fields consulted, in order |
-|---|---|
-| rights holder | `dcterms:rightsHolder`, `xmpRights:Owner`, `ac:providerLiteral` |
-| creator | `dc:creator`, `dcterms:creator`, `photoshop:Credit` |
-| terms | `dcterms:license`, `xmpRights:UsageTerms` |
+| role | fields consulted, in order | coverage |
+|---|---|---:|
+| creator — the photographer | `dc:creator`, `dcterms:creator`, `photoshop:Credit` | 91% |
+| copyright holder — the licensor | `dcterms:rightsHolder`, `xmpRights:Owner` | 34% |
+| provider — served the record | `ac:providerLiteral`, `ac:provider` | 89% |
+| terms | `dcterms:license`, `xmpRights:UsageTerms` | 95% |
+
+**The provider is not an attribution.** That an institution published the record
+does not establish that it holds the rights, so it is reported separately and
+kept out of the copied line. Counting it as a rights holder would have claimed
+94% coverage where the truth is 34%.
 
 They are joined to the individual image on `ac:accessURI` where the publisher
-gives one (92.6% of rows), falling back to the specimen's `coreid`. In one
-weevil archive that filled a rights holder for 94% of type media, a creator for
-91% and usage terms for 95%.
+gives one (92.6% of rows), falling back to the specimen's `coreid`.
+
+Only **30%** of type media in one weevil archive carry both a creator and a
+copyright holder; **4%** carry neither and name only a provider. Where a licence
+requires attribution and the archive does not say whom to credit, the honest
+course is to ask the provider rather than guess — the panel says so instead of
+showing a blank field.
 
 The detail panel shows them and offers **copy attribution**, which puts one line
 on the clipboard:
@@ -270,9 +280,8 @@ Jens Prena / Smithsonian Institution, NMNH, Entomology
 (https://www.si.edu/termsofuse). https://collections.nmnh.si.edu/media/…
 ```
 
-Where nothing is stated the panel says so plainly rather than leaving it blank —
-a licence with no named holder is not enough to attribute. `manifest.csv` gains
-`rights_holder`, `creator` and `usage_terms` columns.
+`manifest.csv` gains `rights_holder`, `creator`, `provider` and `usage_terms`
+columns, so the three can be reconciled outside the gallery too.
 
 ### Capitalisation
 
