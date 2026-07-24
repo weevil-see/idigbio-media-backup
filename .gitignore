@@ -1,0 +1,23 @@
+# Only the scripts and this README are source. Everything a dataset consists of
+# -- the unpacked DwC-A and all that is derived from it -- stays untracked:
+# gigabytes of media, a generated gallery, API caches.
+#
+# The patterns are deliberately name-agnostic, so they hold whether a dataset
+# sits at the repo root or in its own subdirectory:
+#     ./dwca/            or    chrysomelidae/dwca/
+#     ./media/                 chrysomelidae/media/
+
+dwca/
+media/
+gallery/
+taxonomy/
+
+# The original iDigBio download.
+*.zip
+
+# LibreOffice lock files, left behind when a CSV is open in a spreadsheet.
+.~lock.*#
+
+__pycache__/
+*.py[cod]
+.DS_Store
