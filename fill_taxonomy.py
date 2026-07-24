@@ -9,8 +9,9 @@ each record's provenance (archive / mixed / external).
     python3 fill_taxonomy.py --missing-only     # prompts for the token
     python3 make_gallery.py --taxonomy taxonomy/taxonworks.csv
 
-The token is prompted for, never stored: it is not in this file, not read from
-the environment by default, and not written to disk. --project-token exists for
+Credentials are never hard-coded and never committed: they come from a
+git-ignored api.yml if one exists, otherwise you are prompted (getpass, so it
+does not echo) and the file is written for you. --project-token exists for
 automation.
 
 Why it is worth doing: dwc:tribe is absent from the archive entirely, and
@@ -34,6 +35,7 @@ API notes (https://api.taxonworks.org, spec in SpeciesFileGroup/taxonworks_api):
 """
 
 import argparse
+import collections
 import csv
 import re
 import getpass
@@ -54,10 +56,58 @@ _spec.loader.exec_module(dl)
 
 DEFAULT_BASE = "https://sfg.taxonworks.org/api/v1"
 
+# Credentials live in a git-ignored api.yml, looked for in the dataset directory
+# first and then next to the scripts, so one file can serve every dataset or a
+# dataset can carry its own:
+#
+#     ---
+#     url: https://sfg.taxonworks.org/api/v1
+#     project_token: <token>
+#
+CONFIG_FILE = "api.yml"
+
+
+def read_config(root):
+    """{key: value} from the first api.yml found, plus where it came from.
+
+    Deliberately a two-line parser rather than a YAML dependency: the file is a
+    flat set of `key: value` pairs and nothing here needs more than that.
+    """
+    for directory in (root, HERE):
+        path = os.path.join(directory, CONFIG_FILE)
+        if not os.path.exists(path):
+            continue
+        config = {}
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith(("#", "---")):
+                    continue
+                key, sep, value = line.partition(":")
+                if sep:
+                    config[key.strip()] = value.strip().strip("'\"")
+        return config, path
+    return {}, ""
+
+
+def write_config(root, url, token):
+    """Create api.yml, readable only by its owner."""
+    path = os.path.join(root, CONFIG_FILE)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("---\n")
+        fh.write(f"url: {url}\n")
+        fh.write(f"project_token: {token}\n")
+    os.chmod(path, 0o600)
+    return path
+
+
 # TaxonWorks rank_string tail -> the column the gallery expects. Derived from
 # the rank ladder, so the two cannot drift apart: a rank named there is captured
 # here automatically.
 RANK_MAP = {rank.split(":", 1)[1].lower(): rank for rank in dl.TAXON_RANKS}
+# TaxonWorks spells a few ranks differently from the ladder.
+RANK_MAP["classrank"] = "dwc:class"
+RANK_MAP["orderrank"] = "dwc:order"
 RANK_MAP["species"] = "dwc:specificEpithet"
 RANK_MAP["subspecies"] = "dwc:infraspecificEpithet"
 RANK_MAP["variety"] = "dwc:infraspecificEpithet"
@@ -165,6 +215,9 @@ REPORT_COLUMNS = ["status", "queried_name", "sent_to_api", "matched_via",
                   "ranks_filled", "lineage", "specimens", "media_files"]
 
 
+UNMAPPED_RANKS = collections.Counter()
+
+
 def ranks_of(entry):
     """Darwin Core ranks for a cache entry, re-mapped from the raw lineage."""
     if not entry:
@@ -175,7 +228,11 @@ def ranks_of(entry):
     ranks = {}
     for tail, value in pairs:
         column = RANK_MAP.get(tail)
-        if column and column not in ranks:
+        if column is None:
+            if tail not in ("", "nomenclaturalrank"):
+                UNMAPPED_RANKS[tail] += 1      # reported, never dropped in silence
+            continue
+        if column not in ranks:
             ranks[column] = value
     return ranks
 
@@ -266,6 +323,12 @@ def summarise(rows):
             print(f"  {len(ambiguous):,} matched names had more than one candidate; "
                   f"the valid one was preferred")
 
+    if UNMAPPED_RANKS:
+        print("\n  WARNING: ranks TaxonWorks returned that this ladder has no "
+              "column for,\n           so they are not in the tree:")
+        for tail, count in UNMAPPED_RANKS.most_common(8):
+            print(f"    {count:5,}x  {tail}")
+
     missing = [r for r in rows if r["status"] == "absent-from-project"][:5]
     if missing:
         print("\n  most-photographed names not in the project:")
@@ -341,11 +404,13 @@ def main():
                              "current directory if it has one)")
     parser.add_argument("--archive", help="override the DwC-A directory")
     parser.add_argument("--out", help="override the output directory")
-    parser.add_argument("--base-url", default=DEFAULT_BASE,
-                        help=f"API base (default: {DEFAULT_BASE})")
+    parser.add_argument("--base-url",
+                        help=f"API base; overrides api.yml "
+                             f"(default: {DEFAULT_BASE})")
     parser.add_argument("--project-token",
-                        help="TaxonWorks project token. Omit it and you are "
-                             "prompted; it is never written to disk or the code")
+                        help=f"TaxonWorks project token; overrides {CONFIG_FILE}. "
+                             f"Omit it and {CONFIG_FILE} is used if present, "
+                             f"otherwise you are prompted and it is written")
     parser.add_argument("--user-token",
                         help="user token instead of a project token; "
                              "requires --project-id")
@@ -401,19 +466,28 @@ def main():
               f"no API calls)")
         return 0
 
-    token = args.project_token
+    config, config_path = read_config(args.root)
+    base_url = args.base_url or config.get("url") or DEFAULT_BASE
+    token = args.project_token or config.get("project_token", "")
+    if token and not args.project_token:
+        print(f"Using the credentials in {config_path}")
     if not token and not (args.user_token and args.project_id):
         # Prompted rather than kept in the file or an environment variable, so
         # it never lands in the repository or the shell history.
-        print("\nA TaxonWorks project token is created in a project's "
-              "preferences page.\nIt is project-scoped and not secret, but it is "
-              "not stored here either.")
+        print(f"\nA TaxonWorks project token is created in a project's "
+              f"preferences page.\nIt will be saved to {CONFIG_FILE} "
+              f"(git-ignored) so this is asked once.")
         try:
             token = getpass.getpass("TaxonWorks project token: ").strip()
         except (EOFError, KeyboardInterrupt):
             token = ""
         if not token:
             sys.exit("no token given -- nothing to do")
+        try:
+            print(f"  saved to {write_config(args.root, base_url, token)} "
+                  f"(mode 600)")
+        except OSError as error:
+            print(f"  could not save {CONFIG_FILE}: {error}", file=sys.stderr)
 
     os.makedirs(args.out, exist_ok=True)
     cache_path = os.path.join(args.out, "taxonworks_cache.json")
@@ -429,7 +503,7 @@ def main():
             ancestors = json.load(fh)
         print(f"  {len(ancestors):,} ancestor records already cached")
 
-    api = TaxonWorks(args.base_url, token, args.project_id,
+    api = TaxonWorks(base_url, token, args.project_id,
                      args.user_token, args.pause)
     api.names = ancestors
     resolved = 0

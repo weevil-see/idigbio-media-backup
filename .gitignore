@@ -15,6 +15,11 @@ taxonomy/
 # The original iDigBio download.
 *.zip
 
+# API credentials. Not secret in TaxonWorks' model -- a project token marks a
+# project's data as public -- but credentials do not belong in a repository.
+api.yml
+.taxonworks_token
+
 # LibreOffice lock files, left behind when a CSV is open in a spreadsheet.
 .~lock.*#
 

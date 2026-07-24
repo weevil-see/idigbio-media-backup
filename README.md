@@ -213,11 +213,24 @@ python3 ../fill_taxonomy.py --retry-misses    # re-query names cached as misses
 python3 ../make_gallery.py --taxonomy taxonomy/taxonworks.csv
 ```
 
-**The token is never stored.** Not in the scripts, not read from the environment
-by default, not written to disk — you are prompted at the start of each run
-(`getpass`, so it does not echo or reach shell history). `--project-token`
-exists for automation. A project token is not secret in TaxonWorks' model; it
-marks a project's data as public. Create one in your project's preferences.
+#### Credentials
+
+Never hard-coded, never committed. They live in a git-ignored `api.yml`, looked
+for in the dataset directory first and then next to the scripts, so one file can
+serve every dataset or a dataset can carry its own:
+
+```yaml
+---
+url: https://sfg.taxonworks.org/api/v1
+project_token: <token>
+```
+
+If no such file exists you are prompted (`getpass`, so it does not echo or reach
+shell history) and the file is written for you with mode `600`.
+`--project-token` and `--base-url` override it for automation. A project token
+is not secret in TaxonWorks' model — it marks a project's data as public — but
+credentials still do not belong in a repository. Create one in your project's
+preferences.
 
 #### What it may and may not change
 
