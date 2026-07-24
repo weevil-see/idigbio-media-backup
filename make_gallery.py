@@ -502,6 +502,9 @@ PAGE = """<!doctype html>
 <header>
   <h1>Type specimen media</h1>
   <div class="sub" id="count"></div>
+  <div class="sub" id="filehint" style="display:none">
+    opened from a file — dragging an image gives a link, not a file.
+    Re-run with <code>--serve</code> to drag images into other sites.</div>
   <div id="chips"></div>
   <div class="controls">
     <input type="search" id="q" placeholder="Search catalogue no., taxon, typeStatus, publication…">
@@ -698,6 +701,49 @@ function renderLevel(node, prefix, t, term) {
 /* ---- filtering ------------------------------------------------------ */
 // Every image of a specimen, in file order. A specimen is its coreid: catalogue
 // numbers repeat across institutions and are often absent.
+/* Dragging an <img> offers only its URL, so a drop target treats it as a link
+   and navigates instead of uploading. Attaching a real File makes it a file
+   drop -- but the bytes can only be read when the page is served over http,
+   since a file:// page may not fetch its own images. Serve with --serve. */
+const CAN_READ_FILES = location.protocol !== "file:";
+const FILE_CACHE = new Map();
+
+async function fileFor(r) {
+  if (!CAN_READ_FILES || r.pending) return null;
+  if (!FILE_CACHE.has(r.file)) {
+    FILE_CACHE.set(r.file, (async () => {
+      try {
+        const response = await fetch(MEDIA + r.file);
+        const blob = await response.blob();
+        return new File([blob], r.file, { type: blob.type || "image/jpeg" });
+      } catch { return null; }
+    })());
+    FILE_CACHE.get(r.file).then(file => {
+      const slot = FILE_CACHE.get(r.file);
+      if (slot) slot.file = file;      // dragstart is synchronous; keep it ready
+    });
+  }
+  return FILE_CACHE.get(r.file);
+}
+
+function armDrag(img, r) {
+  // The bytes must be in hand before dragstart fires, which cannot await.
+  const warm = () => { fileFor(r); };
+  img.addEventListener("pointerdown", warm);
+  img.addEventListener("mouseenter", warm);
+  img.addEventListener("dragstart", event => {
+    const url = new URL(MEDIA + r.file, location.href).href;
+    // Lets a drag to the desktop or a file manager save the file (Chromium).
+    event.dataTransfer.setData(
+      "DownloadURL", `${r.licence_url ? "image/jpeg" : "image/jpeg"}:${r.file}:${url}`);
+    event.dataTransfer.setData("text/uri-list", url);
+    const pending = FILE_CACHE.get(r.file);
+    if (pending && pending.file) {
+      event.dataTransfer.items.add(pending.file);   // a genuine file drop
+    }
+  });
+}
+
 const GRID = rows.filter(r => !r.pending);   // pending files have nothing to show
 const BY_SPECIMEN = new Map();
 rows.forEach((r, i) => {
@@ -751,6 +797,8 @@ function apply() {
   shown = GRID.filter(matchesAll);
   grid.innerHTML = "";
   drawn = 0;
+  const hint = document.getElementById("filehint");
+  if (hint) hint.style.display = CAN_READ_FILES ? "none" : "";
   document.getElementById("count").textContent =
     `${shown.length.toLocaleString()} images` +
     (shown.length !== GRID.length ? ` of ${GRID.length.toLocaleString()} on disk` : "") +
@@ -860,6 +908,8 @@ function show(rowIndex) {
       <a href="${esc(r.url)}" target="_blank">open the original</a>`;
   } else {
     image.src = MEDIA + r.file;
+    armDrag(image, r);
+    fileFor(r);                      // warm it while the image is being looked at
   }
   const lineage = TREES.map((tree, t) => tree.labels.map((label, d) =>
     r.paths[t][d] ? `<span>${label}</span> ${esc(r.paths[t][d])}` : ""
@@ -911,6 +961,7 @@ function show(rowIndex) {
         ? `<img alt="">`
         : `<img loading="lazy" src="${MEDIA}${esc(sib.file)}" alt="">`;
       button.onclick = () => show(j);
+      if (!sib.pending) armDrag(button.querySelector("img"), sib);
       strip.appendChild(button);
     });
   }
@@ -929,6 +980,33 @@ apply();
 </body>
 </html>
 """
+
+
+def serve(root, page, port, open_browser):
+    """Serve the dataset over localhost until interrupted.
+
+    A file:// page may not read its own images, so dragging one out offers only
+    its URL and a drop target follows it as a link. Served over http the page
+    can read the bytes and attach a real file to the drag.
+    """
+    import functools
+    import http.server
+    import socketserver
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler,
+                                directory=root)
+    handler.log_message = lambda *args, **kwargs: None      # no request spam
+    with socketserver.ThreadingTCPServer(("127.0.0.1", port), handler) as httpd:
+        chosen = httpd.server_address[1]
+        url = f"http://127.0.0.1:{chosen}/{os.path.relpath(page, root)}"
+        print(f"\nServing {root} at {url}")
+        print("Images can now be dragged into other sites. Ctrl-C to stop.")
+        if open_browser:
+            webbrowser.open(url)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped")
 
 
 def main():
@@ -952,6 +1030,11 @@ def main():
                         help="start the taxonomy tree at this rank (e.g. family, "
                              "superfamily). By default the coarsest ranks are "
                              "dropped until each family appears once")
+    parser.add_argument("--serve", action="store_true",
+                        help="serve the dataset over localhost after building, "
+                             "so images can be dragged into other sites as files")
+    parser.add_argument("--port", type=int, default=8000,
+                        help="port for --serve (default: 8000, 0 picks a free one)")
     parser.add_argument("--strict", action="store_true",
                         help="fail instead of warning when files in the media "
                              "folder cannot be matched to the archive")
@@ -995,6 +1078,10 @@ def main():
         if not args.open:
             args.open = dl.ask_yes_no("open the gallery in a browser when built",
                                       True)
+        if not args.serve:
+            args.serve = dl.ask_yes_no(
+                "serve it over localhost (needed to drag images into other "
+                "sites)", False)
         print()
 
 
@@ -1051,7 +1138,10 @@ def main():
         print(f"  {tree['label'].lower()}: " + " > ".join(tree["labels"]))
     print("  classification: " + ", ".join(f"{n:,} {k}" for k, n in sources.items()))
     print(f"Wrote {path} ({os.path.getsize(path) / 1e6:.1f} MB)")
-    if args.open:
+
+    if args.serve:
+        serve(os.path.abspath(args.root), path, args.port, args.open)
+    elif args.open:
         webbrowser.open(f"file://{path}")
 
 

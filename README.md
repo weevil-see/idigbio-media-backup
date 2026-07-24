@@ -148,6 +148,32 @@ Dropdowns filter by type category, institution and licence. Clicking an image
 opens it full size with its metadata and lineage, plus links to the iDigBio
 record and the original media URL; arrow keys step through results.
 
+### Dragging images into other sites
+
+Opened from disk, the page is a `file://` document and **may not read its own
+images** — `fetch` is blocked and a canvas readback taints. A dragged `<img>`
+can then offer only its URL, so a site you drop it on follows it as a link and
+navigates instead of uploading.
+
+Served over localhost the page can read the bytes and attach a real file to the
+drag:
+
+```bash
+python3 ../make_gallery.py --serve          # then use the printed http:// URL
+```
+
+| origin | drag carries | drop target sees |
+|--------|--------------|------------------|
+| `file://`   | `text/uri-list`, `DownloadURL`            | a link |
+| `http://127.0.0.1` | `text/uri-list`, `DownloadURL`, **`Files`** | an `image/jpeg` file |
+
+The file is fetched when you hover or press on an image, because `dragstart`
+cannot wait for it. `DownloadURL` is set either way, which lets Chromium save
+the image when dragged to a file manager. When the page cannot do this it says
+so under the heading rather than failing silently.
+
+`--serve` binds to `127.0.0.1` only, and `--port 0` picks a free port.
+
 ### Licence filter
 
 Licence terms come from `dcterms:rights` with the URL from
