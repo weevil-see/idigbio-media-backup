@@ -155,12 +155,18 @@ images** — `fetch` is blocked and a canvas readback taints. A dragged `<img>`
 can then offer only its URL, so a site you drop it on follows it as a link and
 navigates instead of uploading.
 
-Served over localhost the page can read the bytes and attach a real file to the
-drag:
+Every build writes **`gallery/serve.py`** next to the page. Run it and the
+gallery opens over http, where it can read its own images and attach a real file
+to the drag:
 
 ```bash
-python3 ../make_gallery.py --serve          # then use the printed http:// URL
+python3 gallery/serve.py            # opens the browser; Ctrl-C to stop
+python3 gallery/serve.py 8123       # another port; 0 picks a free one
 ```
+
+The launcher is standalone and regenerated on every build, so the gallery folder
+keeps working if it is copied elsewhere. `make_gallery.py --serve` does the same
+thing immediately after building.
 
 | origin | drag carries | drop target sees |
 |--------|--------------|------------------|
@@ -173,6 +179,19 @@ the image when dragged to a file manager. When the page cannot do this it says
 so under the heading rather than failing silently.
 
 `--serve` binds to `127.0.0.1` only, and `--port 0` picks a free port.
+
+The bytes are fetched when an image is hovered or opened, so a drag begun the
+instant a thumbnail appears may still fall back to a link. Cards, the modal
+image and the filmstrip are all draggable.
+
+### Opening the files in a file manager
+
+Some upload widgets refuse a browser-to-browser drag whatever it carries. When
+served, the detail panel offers **show these files in the file manager**, which
+opens `media/` with that specimen's files — from there they drag as ordinary
+files. The launcher answers this on `/__reveal`, accepting only names that
+resolve inside `media/`, and falls back to `xdg-open` on the folder when no
+known file manager is installed.
 
 ### Licence filter
 
