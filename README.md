@@ -195,10 +195,21 @@ image and the filmstrip are all draggable.
 
 Some upload widgets refuse a browser-to-browser drag whatever it carries. When
 served, the detail panel offers **show these files in the file manager**, which
-opens `media/` with that specimen's files — from there they drag as ordinary
-files. The launcher answers this on `/__reveal`, accepting only names that
-resolve inside `media/`, and falls back to `xdg-open` on the folder when no
-known file manager is installed.
+opens `media/` with that specimen's files already selected, the way a browser
+reveals something it has just downloaded — from there they drag as ordinary
+files.
+
+**This needs `serve.py`.** It works by the launcher running a command on your
+machine (`dolphin --select …`, `nautilus --select …`, and so on), which no web
+page can do by itself. A gallery opened from disk, or copied to a static web
+host, cannot offer it: browsers may not start local programs, and the button
+says so instead of failing quietly. Only names that resolve inside `media/` are
+accepted, and `xdg-open` on the folder is the fallback where no known file
+manager is installed.
+
+Starting the launcher while an older copy is serving the same port stops that
+one first — but only if it is this script; anything else keeps the port and the
+new instance moves to a free one.
 
 ### Licence filter
 
