@@ -717,6 +717,14 @@ def main():
             if not args.retry_misses:
                 args.retry_misses = dl.ask_yes_no(
                     "re-query names previously found absent", False)
+            if not args.gender_variants:
+                args.gender_variants = dl.ask_yes_no(
+                    "accept the same epithet spelled for another genus gender "
+                    "(albidus/albida)", True)
+            if not args.inaturalist:
+                args.inaturalist = dl.ask_yes_no(
+                    "for names TaxonWorks does not hold, take the ranks above "
+                    "species from iNaturalist (slower)", False)
             if args.limit is None:
                 args.limit = dl.ask_int("stop after how many specimens", None)
         print()
@@ -814,8 +822,18 @@ def main():
                           f"progress is saved, re-run to continue", flush=True)
                     break
                 continue
-            via = "name"
+            via, ratio = "name", ""
             stalled = 0
+
+            if not record and sent and args.gender_variants:
+                # The same epithet written for a genus of another gender.
+                try:
+                    record, ratio = api.gender_variant(sent)
+                except Transient:
+                    record = None
+                if record:
+                    via, candidates = "gender", 1
+
             if not record and sent and inat is not None:
                 # TaxonWorks does not hold this name at all. Ask iNaturalist for
                 # the ranks above it, species first and then the genus.
