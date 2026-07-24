@@ -759,6 +759,11 @@ def main():
             "dwc:family": item.get("dwc:family", ""),
             "dwc:kingdom": item.get("dwc:kingdom", ""),
         })
+    # --limit caps how much is *queried*. The outputs still describe every
+    # specimen, from whatever the cache holds: truncating them would overwrite a
+    # complete taxonworks.csv with a handful of rows, which is what a trial run
+    # used to do.
+    all_specimens = specimens
     if args.limit:
         specimens = specimens[: args.limit]
         names = sorted({n for _, n in specimens})
@@ -776,7 +781,7 @@ def main():
         with open(cache_path_early, encoding="utf-8") as fh:
             cached = json.load(fh)
         report_path = os.path.join(args.out, "match_report.csv")
-        summarise(write_report(report_path, cached, specimens, media_counts))
+        summarise(write_report(report_path, cached, all_specimens, media_counts))
         print(f"\nReport -> {report_path}  (from {len(cached):,} cached names, "
               f"no API calls)")
         return 0
@@ -912,8 +917,13 @@ def main():
                                                lineage.get("tribe")))))
                                 resolved += 1
                                 inat_failures = 0
+                                placed = True
                                 break
-                        if name in cache:
+                        # Not `name in cache`: with --retry-misses the name is
+                        # already there as the old miss, so that test was true
+                        # for every retried name and skipped the genus fallback
+                        # and the miss branch entirely.
+                        if placed:
                             continue
                     except Transient as error:
                         # Never asked, so never answered: falling through would
@@ -1010,10 +1020,10 @@ def main():
         save_json(genera_path, genera)
 
     out_path = os.path.join(args.out, "taxonworks.csv")
-    written = write_output(out_path, cache, specimens)
+    written = write_output(out_path, cache, all_specimens)
 
     report_path = os.path.join(args.out, "match_report.csv")
-    summarise(write_report(report_path, cache, specimens, media_counts))
+    summarise(write_report(report_path, cache, all_specimens, media_counts))
 
     extra = f" + {inat.calls:,} iNaturalist" if inat is not None else ""
     print(f"\n{api.calls:,} TaxonWorks API calls{extra}, "
