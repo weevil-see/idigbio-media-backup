@@ -74,7 +74,59 @@ TREES = [
 # Entry layout, positional to keep the embedded JSON small. Each tree gets an
 # array of indices into a shared vocabulary; -1 means that level is unknown.
 FIELDS = ["file", "catalog", "name", "status", "category", "institution",
-          "coreid", "url", "publication", "levels", "source", "matched"]
+          "coreid", "url", "publication", "levels", "source", "matched",
+          "licence", "licence_url"]
+
+
+# iDigBio lower-cases everything it indexes, so the archive yields 'animalia',
+# 'usnm', 'united states'. Values from an external source already carry proper
+# case, so every rule below applies only to an all-lower-case string and leaves
+# anything already capitalised alone. Presentation only -- the stored data and
+# the search index are untouched.
+LOWER_WORDS = {"of", "the", "and", "de", "del", "da", "do", "des", "du", "la",
+               "le", "las", "los", "van", "von", "y"}
+EPITHET_FIELDS = {"dwc:specificEpithet", "dwc:infraspecificEpithet"}
+
+
+def capitalise(value):
+    """Animalia, Curculionidae -- a taxon name above species rank."""
+    if not value or not value.islower():
+        return value
+    return value[0].upper() + value[1:]
+
+
+def title_place(value):
+    """United States, Democratic Republic of the Congo."""
+    if not value or not value.islower():
+        return value
+    words = []
+    for index, word in enumerate(value.split()):
+        if index and word in LOWER_WORDS:
+            words.append(word)
+        else:
+            words.append(word[0].upper() + word[1:] if word else word)
+    return " ".join(words)
+
+
+def present_rank(field, value):
+    """A rank value as it should read: epithets stay lower, the rest capitalise."""
+    if field in EPITHET_FIELDS:
+        return value.lower() if value.isupper() else value
+    if field in set(dl.GEO_RANKS):
+        return title_place(value)
+    return capitalise(value)
+
+
+def present_name(value):
+    """'profidia nitida' -> 'Profidia nitida'; the epithet stays lower case."""
+    return capitalise(value)
+
+
+def present_code(value):
+    """Institution codes are acronyms: usnm -> USNM. Left alone if not one."""
+    if value and value.islower() and value.isalnum() and len(value) <= 8:
+        return value.upper()
+    return value
 
 
 def tidy(value, limit=180):
@@ -207,17 +259,22 @@ def build_entries(archive_dir, media_dir, taxonomy, authoritative, verbatim):
         entries.append([
             name,
             item.get("dwc:catalogNumber", ""),
-            item.get("dwc:scientificName", ""),
-            tidy(item.get("dwc:typeStatus", "")),
+            present_name(item.get("dwc:scientificName", "")),
+            capitalise(tidy(item.get("dwc:typeStatus", ""))),
             item.get("type_category", ""),
-            item.get("dwc:institutionCode", ""),
+            present_code(item.get("dwc:institutionCode", "")),
             item["coreid"],
             item["url"],
             tidy(item.get("publications", ""), 90),
-            [[intern(value_of(item, values, f)) for f in tree["fields"]]
-             for tree in trees],
+            [[intern(present_rank(f, value_of(item, values, f)))
+              for f in tree["fields"]] for tree in trees],
             source,
             matched,
+            # Stated explicitly rather than left blank: whether a file may be
+            # reused is exactly what someone filters on, and an empty cell reads
+            # as "unknown" when it means "the publisher said nothing".
+            item.get("rights") or "(none stated)",
+            item.get("rights_url", ""),
         ])
     # Group a specimen's several views together. coreid (the occurrence UUID) is
     # the identity -- a catalogue number is only unique within an institution, so
@@ -362,6 +419,7 @@ PAGE = """<!doctype html>
     <input type="search" id="q" placeholder="Search catalogue no., taxon, typeStatus, publication…">
     <select id="cat"></select>
     <select id="inst"></select>
+    <select id="lic"></select>
   </div>
 </header>
 
@@ -392,6 +450,7 @@ const rows = DATA.map(a => {
   FIELDS.forEach((f, i) => o[f] = a[i]);
   o.paths = o.levels.map(ix => ix.map(i => i < 0 ? "" : VOCAB[i]));
   o._hay = [o.catalog, o.name, o.status, o.institution, o.publication, o.matched,
+            o.licence,
             ...o.paths.flat()].join(" ").toLowerCase();
   return o;
 });
@@ -549,6 +608,7 @@ const grid = document.getElementById("grid");
 const q = document.getElementById("q");
 const catSel = document.getElementById("cat");
 const instSel = document.getElementById("inst");
+const licSel = document.getElementById("lic");
 
 function fill(sel, label, values) {
   sel.innerHTML = `<option value="">${label} (all)</option>` +
@@ -557,12 +617,14 @@ function fill(sel, label, values) {
 }
 fill(catSel, "Category", rows.map(r => r.category));
 fill(instSel, "Institution", rows.map(r => r.institution));
+fill(licSel, "Licence", rows.map(r => r.licence));
 
 function matchesFields(r) {
   const term = q.value.trim().toLowerCase();
   return (!term || r._hay.includes(term)) &&
          (!catSel.value || r.category === catSel.value) &&
-         (!instSel.value || r.institution === instSel.value);
+         (!instSel.value || r.institution === instSel.value) &&
+         (!licSel.value || r.licence === licSel.value);
 }
 function matchesTree(r, t) {
   return state[t].path.every((v, d) => (r.paths[t][d] || UNKNOWN) === v);
@@ -613,14 +675,14 @@ function renderChips() {
       host.appendChild(chip);
     });
   });
-  const anyField = q.value || catSel.value || instSel.value;
+  const anyField = q.value || catSel.value || instSel.value || licSel.value;
   if (host.children.length || anyField) {
     const all = document.createElement("button");
     all.className = "chip reset-all";
     all.textContent = "reset all filters";
     all.onclick = () => {
       TREES.forEach((_, t) => state[t].path = []);
-      q.value = ""; catSel.value = ""; instSel.value = "";
+      q.value = ""; catSel.value = ""; instSel.value = ""; licSel.value = "";
       apply();
     };
     host.appendChild(all);
@@ -690,6 +752,9 @@ function open(i) {
       <dt>typeStatus</dt><dd>${esc(r.status) || "—"}</dd>
       <dt>Category</dt><dd>${esc(r.category)}</dd>
       <dt>Institution</dt><dd>${esc(r.institution) || "—"}</dd>
+      <dt>Licence</dt><dd>${r.licence_url
+        ? `<a href="${esc(r.licence_url)}" target="_blank">${esc(r.licence)}</a>`
+        : esc(r.licence)}</dd>
       <dt>Classification <span class="ext">${
         r.source === "archive" ? "" : "· " + esc(r.source)}</span></dt>
       <dd class="lineage">${lineage || "—"}</dd>
@@ -708,7 +773,7 @@ addEventListener("keydown", e => {
   if (e.key === "ArrowLeft" && current > 0) open(current - 1);
 });
 
-[q, catSel, instSel].forEach(el => el.addEventListener("input", apply));
+[q, catSel, instSel, licSel].forEach(el => el.addEventListener("input", apply));
 TREES.forEach((_, t) => openTrunk(t));
 apply();
 </script>

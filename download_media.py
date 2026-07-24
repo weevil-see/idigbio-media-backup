@@ -113,8 +113,16 @@ MIME_EXTENSIONS = {
 
 USER_AGENT = "idigbio-archive-media-downloader/1.0"
 
-# Consecutive connect failures before a host is written off for this run.
+# Consecutive connect failures before a host is set aside.
 DEAD_HOST_STRIKES = 5
+# ... and for how long. A host is never written off permanently: it may recover,
+# and the run has no way to tell a dead server from a blip at this end.
+DEAD_HOST_COOLDOWN = 300.0
+# Distinct hosts failing to connect inside OUTAGE_WINDOW for the problem to be
+# diagnosed as local. Remote hosts do not fail in unison; a dropped link does.
+OUTAGE_HOSTS = 3
+OUTAGE_WINDOW = 60.0
+OUTAGE_PAUSE = 30.0
 
 # dwc:typeStatus is free text. Values that explicitly deny type status; kept in
 # the download (they occasionally carry media) but flagged in the manifest.
@@ -287,6 +295,9 @@ def read_media_rows(archive_dir):
                 "url": url,
                 "format": (row.get("dcterms:format") or "").strip().lower(),
                 "media_type": (row.get("idigbio:mediaType") or "").strip(),
+                # Licence terms travel with the media record, not the specimen.
+                "rights": (row.get("dcterms:rights") or "").strip(),
+                "rights_url": (row.get("xmpRights:WebStatement") or "").strip(),
             })
     return rows
 
@@ -546,11 +557,13 @@ def main():
             log_file.flush()
 
         # A host that refuses to connect will do so for every one of its files,
-        # at three attempts times the connect timeout each. Once enough of them
-        # have timed out in a row, stop dialling it and fail the rest instantly;
-        # they are reported normally and retried on the next run.
+        # at three attempts times the connect timeout each, so one that keeps
+        # timing out is set aside -- but only for DEAD_HOST_COOLDOWN, after which
+        # one file is allowed through to test whether it is back.
         host_strikes = collections.Counter()
-        dead_hosts = set()
+        dead_until = {}
+        recent_failures = collections.deque()   # (when, host), for outage detection
+        outage_until = [0.0]
 
         def worker():
             session = requests.Session()
@@ -561,10 +574,27 @@ def main():
                 except queue.Empty:
                     return
                 host = urlparse(item["url"]).netloc.lower()
+                now = time.monotonic()
                 with lock:
-                    skip = host in dead_hosts
+                    pause_until = outage_until[0]
+                    resting = dead_until.get(host, 0.0)
+                    skip = resting > now
+                    if resting and not skip:
+                        # Cool-down elapsed: let this one through as a probe.
+                        dead_until.pop(host, None)
+                        host_strikes.pop(host, None)
+                if pause_until > now:
+                    time.sleep(min(pause_until - now, OUTAGE_PAUSE))
+                    work.put(item)          # nothing was wrong with this file
+                    continue
+                if skip and not item.get("requeued"):
+                    # Try again later in this run rather than failing it now.
+                    item["requeued"] = True
+                    work.put(item)
+                    time.sleep(0.05)        # do not spin if the queue is all one host
+                    continue
                 if skip:
-                    status, detail = "failed", f"skipped: {host} unreachable"
+                    status, detail = "failed", f"skipped: {host} not answering"
                     with lock:
                         counts[status] += 1
                         done[0] += 1
@@ -590,10 +620,28 @@ def main():
                     # a 403 or 404 says the host is up and answering.
                     if status == "ok":
                         host_strikes.pop(host, None)
+                        dead_until.pop(host, None)
                     elif detail.startswith(("ConnectTimeout", "ConnectionError")):
-                        host_strikes[host] += 1
-                        if host_strikes[host] >= DEAD_HOST_STRIKES:
-                            dead_hosts.add(host)
+                        moment = time.monotonic()
+                        recent_failures.append((moment, host))
+                        while recent_failures and \
+                                moment - recent_failures[0][0] > OUTAGE_WINDOW:
+                            recent_failures.popleft()
+                        if len({h for _, h in recent_failures}) >= OUTAGE_HOSTS:
+                            # Several unrelated hosts at once: the link is down at
+                            # this end. Blaming them would write off the whole run.
+                            host_strikes.clear()
+                            dead_until.clear()
+                            recent_failures.clear()
+                            if outage_until[0] < moment:
+                                print(f"  network looks down here -- pausing "
+                                      f"{OUTAGE_PAUSE:.0f}s, no hosts written off",
+                                      flush=True)
+                            outage_until[0] = moment + OUTAGE_PAUSE
+                        else:
+                            host_strikes[host] += 1
+                            if host_strikes[host] >= DEAD_HOST_STRIKES:
+                                dead_until[host] = moment + DEAD_HOST_COOLDOWN
                     counts[status] += 1
                     done[0] += 1
                     log_writer.writerow([
@@ -640,7 +688,8 @@ def main():
 
     manifest = os.path.join(out_dir, "manifest.csv")
     columns = (["status", "filename", "url", "coreid", "media_uuid", "media_type",
-                "format", "type_category"] + OCCURRENCE_CONTEXT
+                "format", "rights", "rights_url", "type_category"]
+               + OCCURRENCE_CONTEXT
                + ["citation_roles", "cited_taxa", "publications", "cited_pages",
                   "detail"])
     with open(manifest, "w", newline="", encoding="utf-8") as fh:

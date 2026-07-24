@@ -128,10 +128,17 @@ OUT_COLUMNS = (["coreid", "queried_name", "taxonworks_name", "taxonworks_rank",
                + [c.split(":", 1)[1] for c in FILLABLE_RANKS] + ["source"])
 
 
+class Transient(Exception):
+    """The API did not answer. The name is left unqueried, not marked absent."""
+
+
 class TaxonWorks:
-    def __init__(self, base, token, project_id=None, user_token=None, pause=0.2):
+    def __init__(self, base, token, project_id=None, user_token=None, pause=0.2,
+                 timeout=45.0, retries=4):
         self.base = base.rstrip("/")
         self.pause = pause
+        self.timeout = timeout
+        self.retries = retries
         self.session = requests.Session()
         self.session.headers["User-Agent"] = dl.USER_AGENT
         self.auth = {"project_token": token} if token else {}
@@ -143,22 +150,33 @@ class TaxonWorks:
 
     def get(self, path, **params):
         params.update(self.auth)
-        for attempt in range(1, 4):
-            response = self.session.get(f"{self.base}{path}", params=params,
-                                        timeout=45)
+        for attempt in range(1, self.retries + 1):
+            try:
+                response = self.session.get(f"{self.base}{path}", params=params,
+                                            timeout=self.timeout)
+            except requests.RequestException as error:
+                # A read timeout or dropped connection is not an answer about
+                # the name -- back off and ask again rather than let one blip
+                # end a run of thousands.
+                if attempt == self.retries:
+                    raise Transient(f"{type(error).__name__}: {error}") from error
+                time.sleep(min(2 ** attempt, 30))
+                continue
             self.calls += 1
             if response.status_code == 401:
                 sys.exit("TaxonWorks returned 401 -- check the project token "
                          "(see --help for where to get one)")
             if response.status_code == 429 or response.status_code >= 500:
-                time.sleep(2 ** attempt)
+                if attempt == self.retries:
+                    raise Transient(f"HTTP {response.status_code}")
+                time.sleep(min(2 ** attempt, 30))
                 continue
             if response.status_code == 404:
                 return None
             response.raise_for_status()
             time.sleep(self.pause)
             return response.json()
-        return None
+        raise Transient("retries exhausted")
 
     def by_id(self, taxon_id):
         key = str(taxon_id)
@@ -190,6 +208,8 @@ class TaxonWorks:
         """
         pairs, guard = [], 0
         while record and guard < 40:
+            # A stall part-way up returns what was gathered so far, which is
+            # still a valid partial lineage.
             guard += 1
             tail = (record.get("rank_string") or "").rsplit("::", 1)[-1].lower()
             name = (record.get("name") or "").strip()
@@ -199,7 +219,10 @@ class TaxonWorks:
             parent = record.get("parent_id")
             if not parent:
                 break
-            record = self.by_id(parent)
+            try:
+                record = self.by_id(parent)
+            except Transient:
+                break
         return pairs
 
 
@@ -424,6 +447,10 @@ def main():
     parser.add_argument("--limit", type=int, help="stop after N names (for trying it)")
     parser.add_argument("--pause", type=float, default=0.2,
                         help="seconds between calls (default: 0.2)")
+    parser.add_argument("--timeout", type=float, default=45.0,
+                        help="per-request timeout in seconds (default: 45)")
+    parser.add_argument("--retries", type=int, default=4,
+                        help="attempts per request before giving up (default: 4)")
     parser.add_argument("--no-verbatim", action="store_true",
                         help="ignore occurrence_raw.csv when deciding what is missing")
     parser.add_argument("--retry-misses", action="store_true",
@@ -504,17 +531,30 @@ def main():
         print(f"  {len(ancestors):,} ancestor records already cached")
 
     api = TaxonWorks(base_url, token, args.project_id,
-                     args.user_token, args.pause)
+                     args.user_token, args.pause, args.timeout, args.retries)
     api.names = ancestors
-    resolved = 0
+    resolved, stalled = 0, 0
+    MAX_STALLED = 25
     try:
         for index, name in enumerate(names, 1):   # query each name once
             known = cache.get(name)
             if known is not None and (ranks_of(known) or not args.retry_misses):
                 continue
             sent = normalise_name(name)
-            record, candidates = api.search(sent) if sent else (None, 0)
+            try:
+                record, candidates = api.search(sent) if sent else (None, 0)
+            except Transient as error:
+                # Leave it uncached so a later run retries it, rather than
+                # recording "absent" for something the API never answered.
+                stalled += 1
+                print(f"  [{stalled}] {name}: {error}", flush=True)
+                if stalled >= MAX_STALLED:
+                    print(f"  giving up after {MAX_STALLED} unanswered requests; "
+                          f"progress is saved, re-run to continue", flush=True)
+                    break
+                continue
             via = "name"
+            stalled = 0
             if not record and sent:
                 # No species-level match: place the record by its genus instead.
                 # 'Curculio sp.' and 'Larinus cf. obtusus' can never match as
@@ -523,7 +563,10 @@ def main():
                 # which is all this fills anyway.
                 genus = sent.split()[0]
                 if genus and genus != sent:
-                    record, candidates = api.search(genus)
+                    try:
+                        record, candidates = api.search(genus)
+                    except Transient:
+                        continue          # retried next run
                     via = "genus" if record else via
             if record:
                 cache[name] = {

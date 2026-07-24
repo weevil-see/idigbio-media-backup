@@ -112,11 +112,21 @@ Not everything is fetchable, and the reasons are worth knowing:
   (`/mnt/…`) instead of a URL; these are skipped up front as `invalid-url`.
 
 HTTP 4xx is not retried (except 408/429) — a refusal will not become a success
-on the second attempt. 5xx and network errors retry with backoff. After
-`DEAD_HOST_STRIKES` (5) consecutive *connection* failures a host is written off
-for the rest of the run and its remaining files fail instantly, which avoids
-spending 3 × the connect timeout on every one of them; they are logged normally
-and retried next run.
+on the second attempt. 5xx and network errors retry with backoff.
+
+After `DEAD_HOST_STRIKES` (5) consecutive *connection* failures a host is set
+aside, which avoids spending 3 × the connect timeout on each of its remaining
+files. It is set aside for `DEAD_HOST_COOLDOWN` (300 s) only, never for the rest
+of the run: after that one file is let through as a probe, and a success clears
+the record entirely. Files skipped meanwhile are re-queued once before being
+failed.
+
+A local network drop is told apart from dead hosts. Remote servers do not fail
+in unison, so when `OUTAGE_HOSTS` (3) distinct hosts fail to connect inside
+`OUTAGE_WINDOW` (60 s) the run treats the problem as local: no host is written
+off, and it pauses for `OUTAGE_PAUSE` (30 s) before carrying on. Without this a
+brief outage at your end would blame every host at once and waste the rest of
+the run.
 
 Progress is reported from the rate of *successful* transfers, since a burst of
 instant refusals otherwise makes the estimate meaningless.
