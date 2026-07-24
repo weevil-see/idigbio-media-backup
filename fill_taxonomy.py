@@ -554,13 +554,18 @@ class INaturalist:
     merged with TaxonWorks' as though one source said both.
     """
 
-    def __init__(self, pause=1.0, timeout=45.0, retries=3):
+    def __init__(self, pause=1.0, timeout=45.0, retries=3, genera=None):
         self.session = requests.Session()
         self.session.headers["User-Agent"] = dl.USER_AGENT
-        self.pause = pause
+        self.pause = pause          # iNaturalist asks for 60 requests a minute
         self.timeout = timeout
         self.retries = retries
         self.calls = 0
+        # Answers keyed by genus, since only the genus is ever asked about and
+        # a genus is shared by every species in it: 2,291 unresolved names in
+        # one archive are 512 genera, and one of them accounts for 214 names.
+        # Misses are kept too, so an absent genus is asked about once.
+        self.genera = genera if genera is not None else {}
 
     def get(self, path, **params):
         for attempt in range(1, self.retries + 1):
@@ -597,6 +602,14 @@ class INaturalist:
         expect = {k: v.lower() for k, v in (expect or {}).items() if v}
         if not expect:
             return None, []
+        # The expectation is part of the key: the same genus asked about under a
+        # different family is a different question, which is the homonym case.
+        key = "|".join([genus.lower(), expect.get("family", ""),
+                        expect.get("kingdom", "")])
+        if key in self.genera:
+            hit = self.genera[key]
+            return (hit or [None, []])[0], (hit or [None, []])[1]
+
         found = self.get("/taxa", q=genus, rank="genus", per_page=10)
         for candidate in (found or {}).get("results", []):
             if (candidate.get("name") or "").lower() != genus.lower():
@@ -609,7 +622,9 @@ class INaturalist:
             if all(lineage.get(rank) == value for rank, value in expect.items()
                    if rank in lineage):
                 if any(rank in lineage for rank in expect):
+                    self.genera[key] = [record, pairs]
                     return record, pairs
+        self.genera[key] = None          # asked, and there is nothing there
         return None, []
 
 
@@ -796,6 +811,12 @@ def main():
         with open(cache_path, encoding="utf-8") as fh:
             cache = json.load(fh)
         print(f"  {len(cache):,} names already cached")
+    genera_path = os.path.join(args.out, "inaturalist_genera.json")
+    genera = {}
+    if os.path.exists(genera_path):
+        with open(genera_path, encoding="utf-8") as fh:
+            genera = json.load(fh)
+        print(f"  {len(genera):,} iNaturalist genera already cached")
     ancestors_path = os.path.join(args.out, "taxonworks_ancestors.json")
     ancestors = {}
     if os.path.exists(ancestors_path):
@@ -805,11 +826,13 @@ def main():
 
     api = TaxonWorks(base_url, token, args.project_id,
                      args.user_token, args.pause, args.timeout, args.retries)
-    inat = None if args.no_inaturalist else INaturalist(timeout=args.timeout)
+    inat = (None if args.no_inaturalist
+            else INaturalist(timeout=args.timeout, genera=genera))
     api.names = ancestors
-    resolved, stalled = 0, 0
+    resolved, stalled, inat_failures = 0, 0, 0
     started = time.monotonic()
     MAX_STALLED = 25
+    MAX_INAT_FAILURES = 8      # a service that is down should not cost the run
     try:
         # Decide what to ask about before starting, so progress counts the work
         # actually being done. Reporting against the whole list left a resumed
@@ -828,7 +851,7 @@ def main():
             print("  nothing left to query", flush=True)
 
         for index, name in enumerate(todo, 1):
-            outcome = "not found"          # replaced as soon as one is known
+            outcome = "no answer — will retry next run"   # until one is known
             try:
                 sent = normalise_name(name)
                 try:
@@ -888,11 +911,21 @@ def main():
                                                lineage.get("subfamily"),
                                                lineage.get("tribe")))))
                                 resolved += 1
+                                inat_failures = 0
                                 break
                         if name in cache:
                             continue
                     except Transient as error:
-                        print(f"  iNaturalist: {name}: {error}", flush=True)
+                        # Never asked, so never answered: falling through would
+                        # reach the miss branch and cache "absent" for a name
+                        # that a working network resolves a moment later.
+                        inat_failures += 1
+                        outcome = "no answer from iNaturalist — will retry next run"
+                        if inat_failures >= MAX_INAT_FAILURES:
+                            print(f"  iNaturalist unreachable ({error}); "
+                                  f"carrying on without it", flush=True)
+                            inat = None
+                        continue
 
                 if not record and sent:
                     # No species-level match: place the record by its genus instead.
@@ -905,7 +938,9 @@ def main():
                         try:
                             record, candidates = api.search(genus)
                         except Transient:
-                            continue          # retried next run
+                            outcome = ("no answer from TaxonWorks — "
+                                       "will retry next run")
+                            continue          # uncached, so the next run asks
                         via = "genus" if record else via
                 if record:
                     # Classify by the name in use now, but remember what was hit.
@@ -961,6 +996,7 @@ def main():
                     print(f"  {index:,}/{len(todo):,} queried, {resolved:,} matched, "
                           f"{rate * 60:.0f}/min, ~{left / 60:.0f} min left", flush=True)
                     save_json(cache_path, cache)
+                    save_json(genera_path, genera)
                     if checkpoint:
                         # The CSV is regenerated whole, so do it on a coarser
                         # interval than the cache, which is cheap to rewrite.
@@ -971,6 +1007,7 @@ def main():
     finally:
         save_json(cache_path, cache)
         save_json(ancestors_path, api.names)
+        save_json(genera_path, genera)
 
     out_path = os.path.join(args.out, "taxonworks.csv")
     written = write_output(out_path, cache, specimens)
